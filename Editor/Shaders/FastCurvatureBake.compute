@@ -265,7 +265,9 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
 
     float r2      = _Radius * _Radius;
     float invR2   = 1.0 / r2;
-    float minD2   = r2 * 1e-6;
+    // Skip samples almost on top of p: their direction is ill-defined and the 16-bit normal
+    // quantization error would be amplified by 1/d in the shading-normals estimator.
+    float minD2   = r2 * 1e-4;
     int3  cell    = (int3)floor((p - _GridOrigin) * _InvCellSize);
 
     float  sumW  = 0.0;

@@ -177,7 +177,7 @@ UI は設定の編集、`MeshReadabilityUtility` による事前確認、`RunAsy
 
 ## 6. 出力
 
-- サブメッシュ i のマテリアル = `sharedMaterials[i]`。ベーステクスチャは `mainTexture` → `_BaseMap` → `_BaseColorMap` の順に探索し、`Assets/` 配下にあればその隣の `BakedCurvature/`、無ければ `Assets/BakedCurvature/`。
+- サブメッシュ i のマテリアル = `sharedMaterials[i]`。ベーステクスチャは `[MainTexture]` 属性付きプロパティ → `_MainTex` → `_BaseMap` → `_BaseColorMap` の順に探索し、`Assets/` 配下にあればその隣の `BakedCurvature/`、無ければ `Assets/BakedCurvature/`。
 - ファイル名: `{GameObject名}[_{マテリアル名}]_Curvature.png`（サブメッシュが複数の場合にマテリアル名を付与。同一実行内での重複は `_sub{i}` で回避）。
 - 8bit RGB PNG（グレースケール値）。インポート設定: sRGB オフ（線形データ）、非圧縮、maxSize = 解像度。
 
