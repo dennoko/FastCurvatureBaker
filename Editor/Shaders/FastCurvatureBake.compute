@@ -1,0 +1,437 @@
+#pragma kernel ClearGBuffer
+#pragma kernel RasterInterior
+#pragma kernel RasterConservative
+#pragma kernel EvaluateCurvature
+#pragma kernel Downsample
+#pragma kernel Blur
+#pragma kernel Dilate
+
+// All 2D images are StructuredBuffers indexed as y * width + x.
+// Texel (x, y) covers UV ((x + 0.5) / width, (y + 0.5) / width); y = 0 is v = 0.
+
+// ---------------------------------------------------------------------------
+// Mesh (world space)
+// ---------------------------------------------------------------------------
+StructuredBuffer<float3> _Positions;
+StructuredBuffer<float3> _Normals;
+StructuredBuffer<float2> _UVs;
+StructuredBuffer<uint>   _Components;
+StructuredBuffer<uint>   _Triangles;
+
+// ---------------------------------------------------------------------------
+// G-buffer
+//   _GPosition: xyz = world position, w = component id + 1 (0 = empty texel)
+//   _GNormal:   octahedral-encoded shading normal (16 + 16 bit)
+// ---------------------------------------------------------------------------
+RWStructuredBuffer<float4> _GPosition;
+RWStructuredBuffer<uint>   _GNormal;
+
+// ---------------------------------------------------------------------------
+// Surface samples in a hashed grid (see SpatialHashGrid.cs)
+// ---------------------------------------------------------------------------
+struct SurfaceSample
+{
+    float3 position;
+    float3 normal;
+    uint   component;
+    float  weight;
+};
+StructuredBuffer<SurfaceSample> _Samples;
+StructuredBuffer<uint2>         _Buckets; // (start, count)
+
+// ---------------------------------------------------------------------------
+// Images: x = curvature value, y = coverage (1 = valid, 0 = empty)
+// ---------------------------------------------------------------------------
+RWStructuredBuffer<float2> _Result;
+StructuredBuffer<float2>   _Src;
+RWStructuredBuffer<float2> _Dst;
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+uint   _Width;          // G-buffer / evaluation resolution
+uint   _SrcWidth;       // post-process source resolution
+uint   _DstWidth;       // post-process destination resolution
+uint   _Offset;         // first element handled by this dispatch
+uint   _End;            // one past the last element handled by this dispatch
+
+float3 _GridOrigin;
+float  _InvCellSize;
+uint   _HashMask;
+
+float  _Radius;
+float  _NormalRejection;
+float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator
+uint   _SameComponentOnly;
+
+static const float ConservativeRadius = 0.75; // pixels
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+float Cross2(float2 a, float2 b)
+{
+    return a.x * b.y - a.y * b.x;
+}
+
+float3 SafeNormalize(float3 v, float3 fallback)
+{
+    float len2 = dot(v, v);
+    return len2 > 1e-30 ? v * rsqrt(len2) : fallback;
+}
+
+uint EncodeNormal(float3 n)
+{
+    n /= max(abs(n.x) + abs(n.y) + abs(n.z), 1e-20);
+    float2 e = n.xy;
+    if (n.z < 0.0)
+    {
+        float2 s = float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+        e = (1.0 - abs(n.yx)) * s;
+    }
+    uint2 q = (uint2)round(saturate(e * 0.5 + 0.5) * 65535.0);
+    return q.x | (q.y << 16);
+}
+
+float3 DecodeNormal(uint v)
+{
+    float2 e = float2(v & 0xFFFF, v >> 16) / 65535.0 * 2.0 - 1.0;
+    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
+    float t = saturate(-n.z);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.y += n.y >= 0.0 ? -t : t;
+    return SafeNormalize(n, float3(0, 0, 1));
+}
+
+uint HashCell(int3 c)
+{
+    uint3 u = (uint3)c;
+    return (u.x * 73856093u) ^ (u.y * 19349663u) ^ (u.z * 83492791u);
+}
+
+int3 NeighbourOffset(uint i)
+{
+    return int3(uint3(i % 3u, (i / 3u) % 3u, i / 9u)) - 1;
+}
+
+bool LoadTriangle(uint t, out uint i0, out uint i1, out uint i2, out float2 a, out float2 b, out float2 c)
+{
+    i0 = _Triangles[t * 3 + 0];
+    i1 = _Triangles[t * 3 + 1];
+    i2 = _Triangles[t * 3 + 2];
+    // Pixel space: texel centres land on integer coordinates.
+    a = _UVs[i0] * _Width - 0.5;
+    b = _UVs[i1] * _Width - 0.5;
+    c = _UVs[i2] * _Width - 0.5;
+    return abs(Cross2(b - a, c - a)) > 1e-10;
+}
+
+void WriteTexel(uint index, uint i0, uint i1, uint i2, float3 w)
+{
+    float3 position = w.x * _Positions[i0] + w.y * _Positions[i1] + w.z * _Positions[i2];
+    float3 normal   = w.x * _Normals[i0]   + w.y * _Normals[i1]   + w.z * _Normals[i2];
+    _GPosition[index] = float4(position, (float)(_Components[i0] + 1));
+    _GNormal[index]   = EncodeNormal(SafeNormalize(normal, _Normals[i0]));
+}
+
+void ClosestOnSegment(float2 p, float2 s0, float2 s1, out float t, out float dist2)
+{
+    float2 e = s1 - s0;
+    float len2 = dot(e, e);
+    t = len2 > 1e-12 ? saturate(dot(p - s0, e) / len2) : 0.0;
+    float2 d = p - (s0 + e * t);
+    dist2 = dot(d, d);
+}
+
+// ---------------------------------------------------------------------------
+// ClearGBuffer — 1 thread per texel in [_Offset, _End)
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void ClearGBuffer(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+    _GPosition[index] = float4(0, 0, 0, 0);
+    _GNormal[index]   = 0;
+}
+
+// ---------------------------------------------------------------------------
+// RasterInterior — 1 thread per triangle in [_Offset, _End).
+// Writes every texel whose centre lies inside the triangle.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void RasterInterior(uint3 id : SV_DispatchThreadID)
+{
+    uint t = id.x + _Offset;
+    if (t >= _End) return;
+
+    uint i0, i1, i2;
+    float2 a, b, c;
+    if (!LoadTriangle(t, i0, i1, i2, a, b, c)) return;
+
+    float invArea = 1.0 / Cross2(b - a, c - a);
+    int2 lo = max((int2)ceil(min(a, min(b, c))), int2(0, 0));
+    int2 hi = min((int2)floor(max(a, max(b, c))), (int)_Width - 1);
+
+    for (int y = lo.y; y <= hi.y; y++)
+    {
+        for (int x = lo.x; x <= hi.x; x++)
+        {
+            float2 p = float2(x, y);
+            float w0 = Cross2(b - p, c - p) * invArea;
+            float w1 = Cross2(c - p, a - p) * invArea;
+            float w2 = 1.0 - w0 - w1;
+            if (min(w0, min(w1, w2)) < -1e-5) continue;
+            WriteTexel((uint)y * _Width + (uint)x, i0, i1, i2, float3(w0, w1, w2));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RasterConservative — 1 thread per triangle in [_Offset, _End).
+// Fills texels left empty by RasterInterior that lie within ConservativeRadius
+// of the triangle, using the attributes of the closest point on the triangle.
+// Running after RasterInterior keeps neighbouring islands from bleeding over.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void RasterConservative(uint3 id : SV_DispatchThreadID)
+{
+    uint t = id.x + _Offset;
+    if (t >= _End) return;
+
+    uint i0, i1, i2;
+    float2 a, b, c;
+    if (!LoadTriangle(t, i0, i1, i2, a, b, c)) return;
+
+    int2 lo = max((int2)ceil(min(a, min(b, c)) - ConservativeRadius), int2(0, 0));
+    int2 hi = min((int2)floor(max(a, max(b, c)) + ConservativeRadius), (int)_Width - 1);
+    const float maxDist2 = ConservativeRadius * ConservativeRadius;
+
+    for (int y = lo.y; y <= hi.y; y++)
+    {
+        for (int x = lo.x; x <= hi.x; x++)
+        {
+            uint index = (uint)y * _Width + (uint)x;
+            if (_GPosition[index].w > 0.5) continue;
+
+            float2 p = float2(x, y);
+            float tab, tbc, tca, dab, dbc, dca;
+            ClosestOnSegment(p, a, b, tab, dab);
+            ClosestOnSegment(p, b, c, tbc, dbc);
+            ClosestOnSegment(p, c, a, tca, dca);
+
+            float3 w;
+            float best;
+            if (dab <= dbc && dab <= dca) { best = dab; w = float3(1.0 - tab, tab, 0.0); }
+            else if (dbc <= dca)          { best = dbc; w = float3(0.0, 1.0 - tbc, tbc); }
+            else                          { best = dca; w = float3(tca, 0.0, 1.0 - tca); }
+
+            if (best > maxDist2) continue;
+            WriteTexel(index, i0, i1, i2, w);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EvaluateCurvature — 1 thread per texel in [_Offset, _End).
+//
+// Aggregates the surface samples within _Radius of the texel's surface point p
+// using the kernel w = area * (1 - d^2 / r^2)^2, then estimates the mean
+// curvature H two ways:
+//
+//   Shading normals: H = sum(w * dot(n_i - n_p, q_i - p) / |q_i - p|^2) / sum(w)
+//                    (average normal curvature over all directions)
+//   Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
+//                    (E[d^2] = r^2 / 4 under this kernel; exact for spheres)
+//
+// Output is the dimensionless H * r: +1 for a sphere of radius r, 0 when flat.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    float4 g = _GPosition[index];
+    if (g.w < 0.5)
+    {
+        _Result[index] = float2(0, 0);
+        return;
+    }
+
+    float3 p         = g.xyz;
+    uint   component = (uint)(g.w + 0.5) - 1;
+    float3 np        = DecodeNormal(_GNormal[index]);
+
+    float r2      = _Radius * _Radius;
+    float invR2   = 1.0 / r2;
+    float minD2   = r2 * 1e-6;
+    int3  cell    = (int3)floor((p - _GridOrigin) * _InvCellSize);
+
+    float  sumW  = 0.0;
+    float3 sumD  = float3(0, 0, 0);
+    float3 sumN  = float3(0, 0, 0);
+    float  sumK  = 0.0;
+    float  sumKW = 0.0;
+
+    [loop]
+    for (uint i = 0; i < 27; i++)
+    {
+        uint bucket = HashCell(cell + NeighbourOffset(i)) & _HashMask;
+
+        // Distinct cells may hash into the same bucket; visit each bucket once.
+        // Recomputing earlier hashes keeps this in registers (no indexable array).
+        bool seen = false;
+        [unroll(27)]
+        for (uint j = 0; j < i; j++)
+        {
+            if ((HashCell(cell + NeighbourOffset(j)) & _HashMask) == bucket)
+            {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) continue;
+
+        uint2 range = _Buckets[bucket];
+        uint end = range.x + range.y;
+        [loop]
+        for (uint s = range.x; s < end; s++)
+        {
+            SurfaceSample smp = _Samples[s];
+            float3 d  = smp.position - p;
+            float  d2 = dot(d, d);
+            if (d2 >= r2) continue;
+            if (_SameComponentOnly != 0 && smp.component != component) continue;
+            if (dot(smp.normal, np) < _NormalRejection) continue;
+
+            float k = 1.0 - d2 * invR2;
+            float w = smp.weight * k * k;
+
+            sumW += w;
+            sumD += w * d;
+            sumN += w * smp.normal;
+
+            if (d2 > minD2)
+            {
+                sumK  += w * dot(smp.normal - np, d) / d2;
+                sumKW += w;
+            }
+        }
+    }
+
+    float geometry = 0.0;
+    if (sumW > 0.0)
+    {
+        float3 nAvg = SafeNormalize(sumN, np);
+        geometry = -8.0 * dot(nAvg, sumD / sumW) / _Radius;
+    }
+    float shading = sumKW > 0.0 ? (sumK / sumKW) * _Radius : 0.0;
+
+    _Result[index] = float2(lerp(shading, geometry, _GeometryWeight), 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Downsample — 2x2 average of valid texels. 1 thread per destination texel.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void Downsample(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    uint x = index % _DstWidth;
+    uint y = index / _DstWidth;
+
+    float sum = 0.0;
+    float coverage = 0.0;
+    for (uint oy = 0; oy < 2; oy++)
+    {
+        for (uint ox = 0; ox < 2; ox++)
+        {
+            float2 s = _Src[(y * 2 + oy) * _SrcWidth + (x * 2 + ox)];
+            sum      += s.x * s.y;
+            coverage += s.y;
+        }
+    }
+
+    _Dst[index] = coverage > 0.0 ? float2(sum / coverage, 1.0) : float2(0.0, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Blur — 3x3 Gaussian over valid texels only. Empty texels stay empty.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void Blur(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    float2 center = _Src[index];
+    if (center.y < 0.5)
+    {
+        _Dst[index] = center;
+        return;
+    }
+
+    int x = (int)(index % _SrcWidth);
+    int y = (int)(index / _SrcWidth);
+    int w = (int)_SrcWidth;
+
+    float sum = 0.0;
+    float weight = 0.0;
+    for (int oy = -1; oy <= 1; oy++)
+    {
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            int sx = x + ox;
+            int sy = y + oy;
+            if (sx < 0 || sy < 0 || sx >= w || sy >= w) continue;
+            float2 s = _Src[sy * w + sx];
+            float k = (ox == 0 ? 2.0 : 1.0) * (oy == 0 ? 2.0 : 1.0) * s.y;
+            sum    += s.x * k;
+            weight += k;
+        }
+    }
+
+    _Dst[index] = float2(sum / weight, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Dilate — each empty texel takes the average of its valid 8-neighbours.
+// Run N times to extend islands by N pixels.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void Dilate(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    float2 center = _Src[index];
+    if (center.y > 0.5)
+    {
+        _Dst[index] = center;
+        return;
+    }
+
+    int x = (int)(index % _SrcWidth);
+    int y = (int)(index / _SrcWidth);
+    int w = (int)_SrcWidth;
+
+    float sum = 0.0;
+    float count = 0.0;
+    for (int oy = -1; oy <= 1; oy++)
+    {
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            int sx = x + ox;
+            int sy = y + oy;
+            if (sx < 0 || sy < 0 || sx >= w || sy >= w) continue;
+            float2 s = _Src[sy * w + sx];
+            sum   += s.x * s.y;
+            count += s.y;
+        }
+    }
+
+    _Dst[index] = count > 0.0 ? float2(sum / count, 1.0) : float2(0.0, 0.0);
+}
