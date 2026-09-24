@@ -1,0 +1,16 @@
+{
+    "name": "dennokoworks.FastCurvatureBaker.Editor",
+    "rootNamespace": "DennokoWorks.Tool.FastCurvatureBaker",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
