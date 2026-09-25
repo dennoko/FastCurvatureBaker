@@ -1,0 +1,95 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+
+    <!-- ヘッダー -->
+    <ui:VisualElement name="header" class="dennoko-header">
+        <ui:VisualElement class="dennoko-header-titlegroup">
+            <ui:Label name="title-label" text="Fast Curvature Baker" class="dennoko-title" />
+            <ui:Label name="version-label" text="" class="dennoko-version-label" />
+            <ui:Button name="version-reload-button" text="↻" class="dennoko-version-reload-button" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+    <ui:VisualElement class="dennoko-separator" />
+
+    <!-- メインスクロール領域 -->
+    <ui:ScrollView class="dennoko-scroll">
+
+        <!-- ターゲット設定カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="TARGET OBJECTS" class="dennoko-section-title dennoko-card-header" />
+            <ui:VisualElement style="flex-direction: row; margin-bottom: 6px;">
+                <ui:Button name="add-selected-button" text="Add Selected" class="dennoko-button-secondary dennoko-col-grow" />
+                <ui:Button name="clear-targets-button" text="Clear" class="dennoko-button-secondary" style="flex-shrink: 0; width: 60px;" />
+            </ui:VisualElement>
+            <ui:VisualElement name="targets-container" />
+            <ui:VisualElement name="drop-area" class="dennoko-drop-area">
+                <ui:Label name="drop-hint-label" text="GameObject をドラッグ＆ドロップして追加" class="dennoko-text-tertiary" style="font-size: 11px;" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- ベイク基本設定カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="BAKE SETTINGS" class="dennoko-section-title dennoko-card-header" />
+            <uie:EnumField label="Bake Mode" name="mode-field" />
+            <ui:DropdownField label="Resolution" name="resolution-field" />
+            <ui:DropdownField label="UV Channel" name="uv-channel-field" />
+            <uie:EnumField label="Quality" name="quality-field" />
+            <ui:Toggle label="Supersample 2x" name="supersample-toggle" />
+        </ui:VisualElement>
+
+        <!-- ハードエッジ設定カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="HARD EDGES (エッジ検出)" class="dennoko-section-title dennoko-card-header" />
+            <ui:FloatField label="Edge Width (m)" name="edge-width-field" />
+            <ui:Slider label="Edge Strength" name="edge-strength-slider" low-value="0" high-value="4" show-input-field="true" />
+        </ui:VisualElement>
+
+        <!-- スムース曲面設定カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="SMOOTH SURFACES (曲面検出)" class="dennoko-section-title dennoko-card-header" />
+            <ui:FloatField label="Radius (m)" name="radius-field" />
+            <ui:Slider label="Strength" name="strength-slider" low-value="0" high-value="4" show-input-field="true" />
+            <uie:EnumField label="Source" name="source-field" />
+        </ui:VisualElement>
+
+        <!-- 詳細設定カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Foldout text="ADVANCED (詳細設定)" name="advanced-foldout" value="false" class="dennoko-section-title">
+                <ui:Toggle label="Same Part Only" name="same-component-toggle" />
+                <ui:Slider label="Normal Rejection" name="normal-rejection-slider" low-value="-1" high-value="0.75" show-input-field="true" />
+                <ui:SliderInt label="Blur Passes" name="blur-passes-slider" low-value="0" high-value="16" show-input-field="true" />
+                <ui:SliderInt label="Dilation (px)" name="dilation-slider" low-value="0" high-value="64" show-input-field="true" />
+                <ui:Toggle label="Overwrite Existing" name="overwrite-toggle" />
+            </ui:Foldout>
+        </ui:VisualElement>
+
+        <!-- 保存先カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="OUTPUT (保存先)" class="dennoko-section-title dennoko-card-header" />
+            <ui:Label name="output-info-label" text="出力先: &lt;テクスチャフォルダ&gt;/Curvature/ (マテリアルにテクスチャが無い場合は Assets/Curvature/)" class="dennoko-text-tertiary" style="font-size: 11px; white-space: normal;" />
+        </ui:VisualElement>
+
+        <!-- 項目解説カード -->
+        <ui:VisualElement class="dennoko-card">
+            <ui:Label text="PROPERTY GUIDE (項目解説)" class="dennoko-section-title dennoko-card-header" />
+            <ui:VisualElement class="dennoko-guide-box">
+                <ui:Label name="guide-title" text="各項目にカーソルを合わせると説明が表示されます" class="dennoko-text-primary" style="font-size: 11px; -unity-font-style: bold; margin-bottom: 4px;" />
+                <ui:Label name="guide-desc" text="各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。" class="dennoko-text-secondary" style="font-size: 11px; white-space: normal; margin-bottom: 4px;" />
+                <ui:Label name="guide-inc" text="" class="dennoko-text-info" style="font-size: 10px; white-space: normal; margin-bottom: 2px;" />
+                <ui:Label name="guide-dec" text="" class="dennoko-text-warning" style="font-size: 10px; white-space: normal;" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+    </ui:ScrollView>
+
+    <ui:VisualElement class="dennoko-separator" />
+
+    <!-- フッター (アクションボタン) -->
+    <ui:VisualElement class="dennoko-card dennoko-footer">
+        <ui:Button name="bake-button" text="Bake Curvature" class="dennoko-button-primary" />
+        <ui:Button name="reset-settings-button" text="Reset Settings" class="dennoko-button-secondary" style="margin-top: 4px;" />
+    </ui:VisualElement>
+
+    <!-- ステータスバー -->
+    <ui:Label name="status-label" text="Ready" class="dennoko-status" />
+
+</ui:UXML>
