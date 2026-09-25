@@ -41,7 +41,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             EnsureFolder(Path.GetDirectoryName(assetPath).Replace('\\', '/'));
             if (!settings.OverwriteExisting)
-                assetPath = AssetDatabase.GenerateUniqueAssetPath(assetPath);
+                assetPath = GenerateUniqueNumberedPath(assetPath);
 
             var pixels = new byte[resolution * resolution * 3];
             float background = settings.BackgroundValue;
@@ -120,6 +120,26 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (!string.IsNullOrEmpty(parent))
                 EnsureFolder(parent);
             AssetDatabase.CreateFolder(parent, Path.GetFileName(folder));
+        }
+
+        /// <summary>
+        /// Unity標準のナンバリング（スペース + 連番、例: Name 1.png）に合わせて
+        /// ファイルが存在しない一意なパスを生成します。
+        /// </summary>
+        public static string GenerateUniqueNumberedPath(string assetPath)
+        {
+            string directory = Path.GetDirectoryName(assetPath)?.Replace('\\', '/');
+            string fileNameWithoutExt = Path.GetFileNameWithoutExtension(assetPath);
+            string extension = Path.GetExtension(assetPath);
+
+            string path = assetPath;
+            int n = 1;
+            while (File.Exists(path) || !string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(path)))
+            {
+                path = $"{directory}/{fileNameWithoutExt} {n}{extension}";
+                n++;
+            }
+            return path;
         }
 
         private static string ToFullPath(string assetPath)

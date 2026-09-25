@@ -236,8 +236,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private static string ReservePath(string folder, string name, string suffix, HashSet<string> usedPaths)
         {
             string path = $"{folder}/{name}{suffix}.png";
-            for (int n = 2; usedPaths.Contains(path); n++)
-                path = $"{folder}/{name}_{n}{suffix}.png";
+            for (int n = 1; usedPaths.Contains(path); n++)
+                path = $"{folder}/{name}{suffix} {n}.png";
             usedPaths.Add(path);
             return path;
         }

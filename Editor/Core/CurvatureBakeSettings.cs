@@ -92,7 +92,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public int DilationPixels = 16;
 
         [Tooltip("Overwrite existing files with the same name. When off, a numbered file is created.")]
-        public bool OverwriteExisting = true;
+        public bool OverwriteExisting = false;
 
         public CurvatureBakeSettings Clone() => (CurvatureBakeSettings)MemberwiseClone();
 
