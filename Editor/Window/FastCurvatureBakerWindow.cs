@@ -111,7 +111,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         new GUIContent("Same Part Only", "Ignore other disconnected parts of the mesh (e.g. clothes over skin)."),
                         s.SameComponentOnly);
                     s.NormalRejection = EditorGUILayout.Slider(
-                        new GUIContent("Normal Rejection", "Ignore nearby surfaces facing away more than this (dot product)."),
+                        new GUIContent("Normal Rejection", "Ignore nearby surfaces facing away more than this (dot product). Weight fades back in over the next 0.25."),
                         s.NormalRejection, -1f, 1f);
                     s.BlurPasses = EditorGUILayout.IntSlider("Blur Passes", s.BlurPasses, 0, 16);
                     s.DilationPixels = EditorGUILayout.IntSlider("Dilation (px)", s.DilationPixels, 0, 64);

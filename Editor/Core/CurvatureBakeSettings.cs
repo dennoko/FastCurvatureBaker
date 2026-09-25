@@ -61,7 +61,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         [Tooltip("Only use surface samples from the same connected mesh part as the texel.")]
         public bool SameComponentOnly = true;
 
-        [Tooltip("Ignore neighbouring surfaces whose normal dot product with the texel normal is below this value.")]
+        [Tooltip("Ignore neighbouring surfaces whose normal dot product with the texel normal is at or below this value. Their weight fades back in over the next 0.25.")]
         public float NormalRejection = -0.5f;
 
         [Tooltip("Number of 3x3 blur passes applied after evaluation.")]

@@ -65,6 +65,7 @@ float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator
 uint   _SameComponentOnly;
 
 static const float ConservativeRadius = 0.75; // pixels
+static const float RejectionBand      = 0.25; // normal-dot range over which rejection fades in
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,12 +238,20 @@ void RasterConservative(uint3 id : SV_DispatchThreadID)
 //
 // Aggregates the surface samples within _Radius of the texel's surface point p
 // using the kernel w = area * (1 - d^2 / r^2)^2, then estimates the mean
-// curvature H two ways:
+// curvature H two ways (n_avg = normalized weighted average sample normal):
 //
-//   Shading normals: H = sum(w * dot(n_i - n_p, q_i - p) / |q_i - p|^2) / sum(w)
-//                    (average normal curvature over all directions)
+//   Shading normals: H = sum(w * dot(n_i - n_avg, d_i)) / sum(w * |d_i|^2)
+//                    Ratio of sums, not a mean of per-sample ratios: across a
+//                    hard edge dn stays finite as d -> 0, so per-sample
+//                    dn.d / d^2 diverges like 1/d and turns into heavy noise.
+//                    Referencing n_avg rather than the texel's own normal keeps
+//                    the response symmetric and peaked on the edge itself.
+//                    Exact for spheres (dn = d / R).
 //   Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
 //                    (E[d^2] = r^2 / 4 under this kernel; exact for spheres)
+//
+// Samples facing away from the texel normal fade out over RejectionBand above
+// _NormalRejection instead of dropping abruptly, avoiding banding at sharp edges.
 //
 // Output is the dimensionless H * r: +1 for a sphere of radius r, 0 when flat.
 // ---------------------------------------------------------------------------
@@ -265,16 +274,13 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
 
     float r2      = _Radius * _Radius;
     float invR2   = 1.0 / r2;
-    // Skip samples almost on top of p: their direction is ill-defined and the 16-bit normal
-    // quantization error would be amplified by 1/d in the shading-normals estimator.
-    float minD2   = r2 * 1e-4;
     int3  cell    = (int3)floor((p - _GridOrigin) * _InvCellSize);
 
     float  sumW  = 0.0;
-    float3 sumD  = float3(0, 0, 0);
-    float3 sumN  = float3(0, 0, 0);
-    float  sumK  = 0.0;
-    float  sumKW = 0.0;
+    float3 sumD  = float3(0, 0, 0); // sum(w * d)
+    float3 sumN  = float3(0, 0, 0); // sum(w * n)
+    float  sumND = 0.0;             // sum(w * dot(n, d))
+    float  sumD2 = 0.0;             // sum(w * |d|^2)
 
     [loop]
     for (uint i = 0; i < 27; i++)
@@ -305,30 +311,31 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
             float  d2 = dot(d, d);
             if (d2 >= r2) continue;
             if (_SameComponentOnly != 0 && smp.component != component) continue;
-            if (dot(smp.normal, np) < _NormalRejection) continue;
+
+            float facing = smoothstep(_NormalRejection, _NormalRejection + RejectionBand, dot(smp.normal, np));
+            if (facing <= 0.0) continue;
 
             float k = 1.0 - d2 * invR2;
-            float w = smp.weight * k * k;
+            float w = smp.weight * k * k * facing;
 
-            sumW += w;
-            sumD += w * d;
-            sumN += w * smp.normal;
-
-            if (d2 > minD2)
-            {
-                sumK  += w * dot(smp.normal - np, d) / d2;
-                sumKW += w;
-            }
+            sumW  += w;
+            sumD  += w * d;
+            sumN  += w * smp.normal;
+            sumND += w * dot(smp.normal, d);
+            sumD2 += w * d2;
         }
     }
 
     float geometry = 0.0;
+    float shading  = 0.0;
     if (sumW > 0.0)
     {
         float3 nAvg = SafeNormalize(sumN, np);
         geometry = -8.0 * dot(nAvg, sumD / sumW) / _Radius;
+        // sum(w * dot(n_i - nAvg, d_i)) expanded so it accumulates in one pass.
+        if (sumD2 > 0.0)
+            shading = (sumND - dot(nAvg, sumD)) / sumD2 * _Radius;
     }
-    float shading = sumKW > 0.0 ? (sumK / sumKW) * _Radius : 0.0;
 
     _Result[index] = float2(lerp(shading, geometry, _GeometryWeight), 1.0);
 }
