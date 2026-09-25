@@ -129,8 +129,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (!(max.x >= 0f && max.y >= 0f && min.x <= resolution - 1 && min.y <= resolution - 1))
                 return false; // also rejects NaN UVs
 
-            lo = new Vector2Int(Math.Max(Mathf.CeilToInt(min.x), 0), Math.Max(Mathf.CeilToInt(min.y), 0));
-            hi = new Vector2Int(Math.Min(Mathf.FloorToInt(max.x), resolution - 1), Math.Min(Mathf.FloorToInt(max.y), resolution - 1));
+            // Clamp before converting so far-away UVs cannot overflow the int conversion.
+            lo = new Vector2Int(Mathf.CeilToInt(Mathf.Max(min.x, 0f)), Mathf.CeilToInt(Mathf.Max(min.y, 0f)));
+            hi = new Vector2Int(Mathf.FloorToInt(Mathf.Min(max.x, resolution - 1)), Mathf.FloorToInt(Mathf.Min(max.y, resolution - 1)));
             return lo.x <= hi.x && lo.y <= hi.y;
         }
 

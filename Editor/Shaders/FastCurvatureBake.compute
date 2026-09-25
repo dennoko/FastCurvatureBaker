@@ -193,9 +193,11 @@ bool LoadTile(uint item, float margin, out uint t, out float2 a, out float2 b, o
     uint i0, i1, i2;
     bool valid = LoadTriangle(t, i0, i1, i2, a, b, c);
 
-    int2 tileLo = int2(tile.y & 0xFFFF, tile.y >> 16) * (int)_TileSize;
-    lo = max(max((int2)ceil(min(a, min(b, c)) - margin), tileLo), int2(0, 0));
-    hi = min(min((int2)floor(max(a, max(b, c)) + margin), tileLo + (int)_TileSize - 1), (int)_Width - 1);
+    // Clamp in float before converting so far-away UVs cannot overflow the int conversion.
+    float2 tileLo = float2(tile.y & 0xFFFF, tile.y >> 16) * _TileSize;
+    float2 tileHi = min(tileLo + (_TileSize - 1), (float)(_Width - 1));
+    lo = (int2)ceil(max(min(a, min(b, c)) - margin, tileLo));
+    hi = (int2)floor(min(max(a, max(b, c)) + margin, tileHi));
     return valid;
 }
 
