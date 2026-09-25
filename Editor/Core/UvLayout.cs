@@ -55,6 +55,47 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return items.ToArray();
         }
 
+        /// <summary>
+        /// UV island id per triangle. Triangles sharing a UV coordinate (the exact value, so vertices split
+        /// only for normals still connect) belong to the same island. Post-processing uses the ids to
+        /// keep neighbouring islands from mixing when texels are averaged.
+        /// </summary>
+        public static uint[] LabelIslands(int[] triangles, Vector2[] uvs)
+        {
+            var keyOf = new Dictionary<Vector2, int>();
+            var vertexKey = new int[uvs.Length];
+            for (int v = 0; v < uvs.Length; v++)
+            {
+                if (!keyOf.TryGetValue(uvs[v], out int key))
+                {
+                    key = keyOf.Count;
+                    keyOf.Add(uvs[v], key);
+                }
+                vertexKey[v] = key;
+            }
+
+            int[] parent = SurfaceMesh.CreateSets(keyOf.Count);
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                SurfaceMesh.Union(parent, vertexKey[triangles[t]], vertexKey[triangles[t + 1]]);
+                SurfaceMesh.Union(parent, vertexKey[triangles[t]], vertexKey[triangles[t + 2]]);
+            }
+
+            var rootToIsland = new Dictionary<int, uint>();
+            var islands = new uint[triangles.Length / 3];
+            for (int t = 0; t < islands.Length; t++)
+            {
+                int root = SurfaceMesh.Find(parent, vertexKey[triangles[t * 3]]);
+                if (!rootToIsland.TryGetValue(root, out uint island))
+                {
+                    island = (uint)rootToIsland.Count;
+                    rootToIsland.Add(root, island);
+                }
+                islands[t] = island;
+            }
+            return islands;
+        }
+
         /// <summary>Upper bound of the tile count (footprint bounding boxes only).</summary>
         private static long CountTiles(int[] triangles, Vector2[] uvs, int resolution, int tileSize)
         {

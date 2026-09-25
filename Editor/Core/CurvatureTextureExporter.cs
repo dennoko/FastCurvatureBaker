@@ -34,7 +34,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         }
 
         /// <summary>
-        /// Writes <paramref name="data"/> (curvature, coverage) as an 8-bit grayscale PNG and configures its importer.
+        /// Writes <paramref name="data"/> (curvature, island id + 1 or 0 when empty) as an 8-bit grayscale PNG and configures its importer.
         /// Returns the asset path.
         /// </summary>
         public static string Save(Vector2[] data, int resolution, CurvatureBakeSettings settings, string assetPath)

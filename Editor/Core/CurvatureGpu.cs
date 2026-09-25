@@ -84,7 +84,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         /// <summary>
         /// Bakes one sub-mesh. Returns <c>Resolution²</c> texels, row-major from v = 0,
-        /// each holding (signed curvature with strengths applied, coverage).
+        /// each holding (signed curvature with strengths applied, UV island id + 1 or 0 when empty).
         /// </summary>
         public async Task<Vector2[]> BakeSubMeshAsync(
             int[] triangles,
@@ -99,7 +99,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             int res = outputRes * settings.SupersampleFactor;
             int texels = res * res;
 
-            ComputeBuffer triangleBuffer = null, tileBuffer = null, gOwner = null, gPosition = null, gNormal = null;
+            ComputeBuffer triangleBuffer = null, islandBuffer = null, tileBuffer = null;
+            ComputeBuffer gOwner = null, gPosition = null, gNormal = null;
             ComputeBuffer result = null, pingA = null, pingB = null;
             try
             {
@@ -109,6 +110,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 token.ThrowIfCancellationRequested();
 
                 triangleBuffer = CreateBuffer(triangles, 4);
+                islandBuffer = CreateBuffer(UvLayout.LabelIslands(triangles, _uvs), 4);
                 gOwner = new ComputeBuffer(texels, 4);
                 gPosition = new ComputeBuffer(texels, 16);
                 gNormal = new ComputeBuffer(texels, 4); // also the conservative passes' distance scratch (_GDist)
@@ -176,6 +178,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
                 _shader.SetBuffer(_kEvaluate, "_GPosition", gPosition);
                 _shader.SetBuffer(_kEvaluate, "_GNormal", gNormal);
+                _shader.SetBuffer(_kEvaluate, "_GOwner", gOwner);
+                _shader.SetBuffer(_kEvaluate, "_TriangleIslands", islandBuffer);
                 _shader.SetBuffer(_kEvaluate, "_PatchComponents", _patchComponents);
                 _shader.SetBuffer(_kEvaluate, "_Samples", _samples);
                 _shader.SetBuffer(_kEvaluate, "_Buckets", _buckets);
@@ -190,6 +194,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 gPosition.Release(); gPosition = null;
                 gNormal.Release(); gNormal = null;
                 triangleBuffer.Release(); triangleBuffer = null;
+                islandBuffer.Release(); islandBuffer = null;
 
                 // ---- Post-process ----
                 progress(0.92f, "Post-processing");
@@ -228,6 +233,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             finally
             {
                 triangleBuffer?.Release();
+                islandBuffer?.Release();
                 tileBuffer?.Release();
                 gOwner?.Release();
                 gPosition?.Release();

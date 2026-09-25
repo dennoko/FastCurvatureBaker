@@ -314,7 +314,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return Vector3.Dot(SafeNormalize(a), SafeNormalize(b)) > 0.9999f;
         }
 
-        private static int[] CreateSets(int count)
+        internal static int[] CreateSets(int count)
         {
             var parent = new int[count];
             for (int i = 0; i < count; i++) parent[i] = i;
@@ -340,7 +340,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return labels;
         }
 
-        private static int Find(int[] parent, int x)
+        internal static int Find(int[] parent, int x)
         {
             while (parent[x] != x)
             {
@@ -350,7 +350,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return x;
         }
 
-        private static void Union(int[] parent, int a, int b)
+        internal static void Union(int[] parent, int a, int b)
         {
             a = Find(parent, a);
             b = Find(parent, b);

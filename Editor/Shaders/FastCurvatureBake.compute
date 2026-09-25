@@ -65,8 +65,10 @@ StructuredBuffer<EdgeSegment> _Edges;
 StructuredBuffer<uint2>       _EdgeBuckets;
 
 // ---------------------------------------------------------------------------
-// Images: x = curvature value, y = coverage (1 = valid, 0 = empty)
+// Images: x = curvature value, y = UV island id + 1 (0 = empty texel).
+// Island ids stay exact in float up to 2^24.
 // ---------------------------------------------------------------------------
+StructuredBuffer<uint>     _TriangleIslands; // UV island id per triangle, see UvLayout.cs
 RWStructuredBuffer<float2> _Result;
 StructuredBuffer<float2>   _Src;
 RWStructuredBuffer<float2> _Dst;
@@ -524,7 +526,40 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
 
     float value = _Strength * SmoothCurvature(p, np, patchId, component)
                 + _EdgeStrength * EdgeCurvature(p, np, component);
-    _Result[index] = float2(value, 1.0);
+    _Result[index] = float2(value, (float)(_TriangleIslands[_GOwner[index]] + 1));
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing never averages texels of different UV islands: a 2x2 block
+// or a dilation front where islands meet takes the island most of its valid
+// texels belong to (lowest id on ties), and only that island's values.
+// ---------------------------------------------------------------------------
+float2 DominantIslandAverage(float2 s[9])
+{
+    float island = 0.0;
+    uint  best   = 0;
+    [unroll]
+    for (uint i = 0; i < 9; i++)
+    {
+        if (s[i].y < 0.5) continue;
+        uint count = 0;
+        [unroll]
+        for (uint j = 0; j < 9; j++)
+            count += s[j].y == s[i].y ? 1u : 0u;
+        if (count > best || (count == best && s[i].y < island))
+        {
+            best   = count;
+            island = s[i].y;
+        }
+    }
+    if (best == 0)
+        return float2(0.0, 0.0);
+
+    float sum = 0.0;
+    [unroll]
+    for (uint k = 0; k < 9; k++)
+        sum += s[k].y == island ? s[k].x : 0.0;
+    return float2(sum / best, island);
 }
 
 // ---------------------------------------------------------------------------
@@ -539,23 +574,19 @@ void Downsample(uint3 id : SV_DispatchThreadID)
     uint x = index % _DstWidth;
     uint y = index / _DstWidth;
 
-    float sum = 0.0;
-    float coverage = 0.0;
-    for (uint oy = 0; oy < 2; oy++)
+    float2 s[9];
+    [unroll]
+    for (uint k = 0; k < 9; k++)
     {
-        for (uint ox = 0; ox < 2; ox++)
-        {
-            float2 s = _Src[(y * 2 + oy) * _SrcWidth + (x * 2 + ox)];
-            sum      += s.x * s.y;
-            coverage += s.y;
-        }
+        s[k] = float2(0.0, 0.0);
+        if (k < 4) s[k] = _Src[(y * 2 + k / 2) * _SrcWidth + (x * 2 + k % 2)];
     }
 
-    _Dst[index] = coverage > 0.0 ? float2(sum / coverage, 1.0) : float2(0.0, 0.0);
+    _Dst[index] = DominantIslandAverage(s);
 }
 
 // ---------------------------------------------------------------------------
-// Blur — 3x3 Gaussian over valid texels only. Empty texels stay empty.
+// Blur — 3x3 Gaussian over valid texels of the same island. Empty texels stay empty.
 // ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
 void Blur(uint3 id : SV_DispatchThreadID)
@@ -584,18 +615,19 @@ void Blur(uint3 id : SV_DispatchThreadID)
             int sy = y + oy;
             if (sx < 0 || sy < 0 || sx >= w || sy >= w) continue;
             float2 s = _Src[sy * w + sx];
-            float k = (ox == 0 ? 2.0 : 1.0) * (oy == 0 ? 2.0 : 1.0) * s.y;
+            if (s.y != center.y) continue;
+            float k = (ox == 0 ? 2.0 : 1.0) * (oy == 0 ? 2.0 : 1.0);
             sum    += s.x * k;
             weight += k;
         }
     }
 
-    _Dst[index] = float2(sum / weight, 1.0);
+    _Dst[index] = float2(sum / weight, center.y);
 }
 
 // ---------------------------------------------------------------------------
-// Dilate — each empty texel takes the average of its valid 8-neighbours.
-// Run N times to extend islands by N pixels.
+// Dilate — each empty texel takes the average of its valid 8-neighbours of
+// the dominant island. Run N times to extend islands by N pixels.
 // ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
 void Dilate(uint3 id : SV_DispatchThreadID)
@@ -614,20 +646,15 @@ void Dilate(uint3 id : SV_DispatchThreadID)
     int y = (int)(index / _SrcWidth);
     int w = (int)_SrcWidth;
 
-    float sum = 0.0;
-    float count = 0.0;
-    for (int oy = -1; oy <= 1; oy++)
+    float2 s[9];
+    [unroll]
+    for (uint k = 0; k < 9; k++)
     {
-        for (int ox = -1; ox <= 1; ox++)
-        {
-            int sx = x + ox;
-            int sy = y + oy;
-            if (sx < 0 || sy < 0 || sx >= w || sy >= w) continue;
-            float2 s = _Src[sy * w + sx];
-            sum   += s.x * s.y;
-            count += s.y;
-        }
+        int sx = x + (int)(k % 3) - 1;
+        int sy = y + (int)(k / 3) - 1;
+        s[k] = float2(0.0, 0.0);
+        if (sx >= 0 && sy >= 0 && sx < w && sy < w) s[k] = _Src[sy * w + sx];
     }
 
-    _Dst[index] = count > 0.0 ? float2(sum / count, 1.0) : float2(0.0, 0.0);
+    _Dst[index] = DominantIslandAverage(s);
 }
