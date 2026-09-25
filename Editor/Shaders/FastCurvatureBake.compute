@@ -60,7 +60,8 @@ struct EdgeSegment
     float3 faceNormalA;
     float3 faceNormalB;
     float  value;      // +1 = 90-degree convex, -1 = 90-degree concave
-    uint   component;
+    uint   patchA;     // smooth patches of the two adjacent faces
+    uint   patchB;
 };
 StructuredBuffer<EdgeSegment> _Edges;
 StructuredBuffer<uint2>       _EdgeBuckets;
@@ -416,9 +417,11 @@ void ResolveGBuffer(uint3 id : SV_DispatchThreadID)
 //    width does not depend on _Radius. Samples facing away from the texel
 //    normal fade out over RejectionBand above _NormalRejection.
 //
-// 2) Edge term (width = _EdgeWidth). The strongest nearby hard edge of the
-//    same part, weighted by (1 - dist^2 / width^2)^2 and by how well the texel
-//    faces one of the edge's two faces.
+// 2) Edge term (width = _EdgeWidth). The strongest nearby hard edge bordering
+//    the texel's smooth patch, weighted by (1 - dist^2 / width^2)^2 and by how
+//    well the texel faces one of the edge's two faces. The patch test keeps
+//    edges off other nearby surfaces of the same part (a folded or parallel
+//    face) even when they face the same way.
 //
 // Output: _Strength * H * r + _EdgeStrength * edge. +1 = a sphere of radius r
 // or a 90-degree convex edge at full strength; 0 = flat.
@@ -482,7 +485,7 @@ float SmoothCurvature(float3 p, float3 np, uint patchId, uint component)
     return lerp(shading, geometry, _GeometryWeight);
 }
 
-float EdgeCurvature(float3 p, float3 np, uint component)
+float EdgeCurvature(float3 p, float3 np, uint patchId)
 {
     if (_EdgeCount == 0)
         return 0.0;
@@ -503,7 +506,7 @@ float EdgeCurvature(float3 p, float3 np, uint component)
         for (uint s = range.x; s < end; s++)
         {
             EdgeSegment edge = _Edges[s];
-            if (edge.component != component) continue;
+            if (edge.patchA != patchId && edge.patchB != patchId) continue;
 
             float3 ab = edge.b - edge.a;
             float  t  = saturate(dot(p - edge.a, ab) / max(dot(ab, ab), 1e-20));
@@ -541,7 +544,7 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
     float3 np        = DecodeNormal(_GNormal[index]);
 
     float value = _Strength * SmoothCurvature(p, np, patchId, component)
-                + _EdgeStrength * EdgeCurvature(p, np, component);
+                + _EdgeStrength * EdgeCurvature(p, np, patchId);
     _Result[index] = float2(value, (float)(_TriangleIslands[_GOwner[index]] + 1));
 }
 

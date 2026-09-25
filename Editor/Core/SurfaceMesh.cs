@@ -14,7 +14,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public Vector3 FaceNormalA;  // normals of the two adjacent faces
         public Vector3 FaceNormalB;
         public float Value;          // +1 = 90-degree convex, -1 = 90-degree concave (saturated beyond)
-        public uint Component;
+        public uint PatchA;          // smooth patches of the two adjacent faces (equal for an edge
+        public uint PatchB;          // that ends inside a patch)
     }
 
     /// <summary>
@@ -291,7 +292,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     FaceNormalA = nA,
                     FaceNormalB = nB,
                     Value = bend < 0f ? strength : -strength,
-                    Component = mesh.ComponentIds[s0.From],
+                    PatchA = mesh.PatchIds[s0.From],
+                    PatchB = mesh.PatchIds[s1.From],
                 });
             }
             return result;

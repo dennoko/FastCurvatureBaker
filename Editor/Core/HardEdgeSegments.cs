@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
-    /// <summary>GPU layout must match <c>EdgeSegment</c> in FastCurvatureBake.compute (56 bytes).</summary>
+    /// <summary>GPU layout must match <c>EdgeSegment</c> in FastCurvatureBake.compute (60 bytes).</summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct EdgeSegment
     {
@@ -13,9 +13,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public Vector3 FaceNormalA;
         public Vector3 FaceNormalB;
         public float Value;
-        public uint Component;
+        public uint PatchA;
+        public uint PatchB;
 
-        public const int Stride = 56;
+        public const int Stride = 60;
 
         public Vector3 Midpoint => (A + B) * 0.5f;
     }
@@ -55,7 +56,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         FaceNormalA = edge.FaceNormalA,
                         FaceNormalB = edge.FaceNormalB,
                         Value = edge.Value,
-                        Component = edge.Component,
+                        PatchA = edge.PatchA,
+                        PatchB = edge.PatchB,
                     });
                 }
             }
