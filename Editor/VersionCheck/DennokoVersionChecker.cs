@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -45,7 +46,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             var branches = new List<string>();
             if (!string.IsNullOrEmpty(branch)) branches.Add(branch);
-            if (!branches.Contains("main", StringComparer.OrdinalIgnoreCase)) branches.Add("main");
+            if (!branches.Any(b => string.Equals(b, "main", StringComparison.OrdinalIgnoreCase))) branches.Add("main");
 
             TryBranch(owner, repo, branches, 0, filePath, localVersion, onResult);
         }
