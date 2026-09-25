@@ -20,11 +20,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
     /// <summary>
     /// World-space snapshot of a renderer's mesh, prepared for curvature baking.
+    /// Positions keep the world rotation and scale but not the translation: curvature only depends on
+    /// relative positions, and float precision would otherwise suffer far from the scene origin.
     /// </summary>
     internal sealed class SurfaceMesh
     {
         public string Name;
-        public Vector3[] Positions;     // world space
+        public Vector3[] Positions;     // world orientation and scale, relative to the renderer's pivot
         public Vector3[] Normals;       // world space, normalized
         public Vector2[] UVs;
         public uint[] ComponentIds;     // connected-part id per vertex (welded by position: UV seams and hard edges joined)
@@ -77,6 +79,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             var normalMatrix = toWorld.inverse.transpose;
             mesh.Positions = new Vector3[posedPositions.Length];
+            // Drop the translation before transforming: a large world offset would round the
+            // positions to coarse floats that no later recentering could recover.
+            toWorld.SetColumn(3, new Vector4(0f, 0f, 0f, 1f));
             for (int i = 0; i < posedPositions.Length; i++)
                 mesh.Positions[i] = toWorld.MultiplyPoint3x4(posedPositions[i]);
 

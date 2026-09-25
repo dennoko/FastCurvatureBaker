@@ -543,8 +543,11 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
     uint   component = _PatchComponents[patchId];
     float3 np        = DecodeNormal(_GNormal[index]);
 
-    float value = _Strength * SmoothCurvature(p, np, patchId, component)
-                + _EdgeStrength * EdgeCurvature(p, np, patchId);
+    float value = 0.0;
+    if (_Strength > 0.0)
+        value += _Strength * SmoothCurvature(p, np, patchId, component);
+    if (_EdgeStrength > 0.0)
+        value += _EdgeStrength * EdgeCurvature(p, np, patchId);
     _Result[index] = float2(value, (float)(_TriangleIslands[_GOwner[index]] + 1));
 }
 

@@ -70,7 +70,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _uvsBuffer = CreateBuffer(mesh.UVs, 8);
             _patches = CreateBuffer(mesh.PatchIds, 4);
             _patchComponents = CreateBuffer(mesh.PatchComponents, 4);
-            _samples = CreateBuffer(grid.SortedItems, SurfaceSample.Stride);
+            // Placeholder when the smooth term is off (Strength 0): buffers cannot be empty.
+            _samples = grid.SortedItems.Length > 0
+                ? CreateBuffer(grid.SortedItems, SurfaceSample.Stride)
+                : new ComputeBuffer(1, SurfaceSample.Stride);
             _buckets = CreatePairBuffer(grid.Buckets);
 
             // The kernel always references the edge buffers; bind placeholders when there are no edges.

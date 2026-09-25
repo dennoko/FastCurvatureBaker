@@ -166,14 +166,23 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             await Task.Yield();
             token.ThrowIfCancellationRequested();
 
-            float requestedSpacing = settings.Radius / settings.SamplesPerRadius;
-            float spacing = requestedSpacing;
-            SurfaceSample[] samples = SurfaceSampler.Generate(mesh, ref spacing, settings.Source == CurvatureSource.Geometry);
-            if (spacing > requestedSpacing * 1.001f)
+            // The smooth term is skipped entirely (no samples) when its strength is zero.
+            SurfaceSample[] samples = Array.Empty<SurfaceSample>();
+            if (settings.Strength > 0f)
             {
-                Debug.LogWarning($"{LogPrefix} '{renderer.name}': sample budget reached, spacing widened " +
-                                 $"from {requestedSpacing:G3} to {spacing:G3}. Increase Radius or lower Quality for cleaner results.");
+                float requestedSpacing = settings.Radius / settings.SamplesPerRadius;
+                float spacing = requestedSpacing;
+                samples = SurfaceSampler.Generate(mesh, ref spacing, settings.Source == CurvatureSource.Geometry);
+                if (spacing > requestedSpacing * 1.001f)
+                {
+                    Debug.LogWarning($"{LogPrefix} '{renderer.name}': sample budget reached, spacing widened " +
+                                     $"from {requestedSpacing:G3} to {spacing:G3}. Increase Radius or lower Quality for cleaner results.");
+                }
             }
+
+            progress(PrepareShare * 0.8f, "Building search grids");
+            await Task.Yield();
+            token.ThrowIfCancellationRequested();
 
             // 1% margin: CPU and GPU may floor a cell coordinate differently right on a boundary.
             var grid = SpatialHashGrid<SurfaceSample>.Build(
@@ -185,6 +194,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 EdgeSegment[] segments = HardEdgeSegments.Build(mesh.HardEdges, settings.EdgeWidth, out float edgeCell);
                 edgeGrid = SpatialHashGrid<EdgeSegment>.Build(segments, e => e.Midpoint, mesh.Bounds, edgeCell);
             }
+            token.ThrowIfCancellationRequested();
             Debug.Log($"{LogPrefix} '{renderer.name}': {samples.Length} samples, {mesh.HardEdges.Count} hard edges, " +
                       $"{mesh.ComponentCount} parts.");
             gpu.LoadMesh(mesh, grid, edgeGrid);
