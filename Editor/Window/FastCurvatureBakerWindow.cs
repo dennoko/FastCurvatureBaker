@@ -138,7 +138,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         s.SameComponentOnly);
                     s.NormalRejection = EditorGUILayout.Slider(
                         new GUIContent("Normal Rejection", "Ignore nearby surfaces facing away more than this (dot product). Weight fades back in over the next 0.25."),
-                        s.NormalRejection, -1f, 1f);
+                        s.NormalRejection, -1f, CurvatureBakeSettings.MaxNormalRejection);
                     s.BlurPasses = EditorGUILayout.IntSlider("Blur Passes", s.BlurPasses, 0, 16);
                     s.DilationPixels = EditorGUILayout.IntSlider("Dilation (px)", s.DilationPixels, 0, 64);
                     s.OverwriteExisting = EditorGUILayout.Toggle("Overwrite Existing", s.OverwriteExisting);

@@ -42,6 +42,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         public const int MaxInternalResolution = 4096;
 
+        /// <summary>Normal-dot range over which rejected samples fade back in (RejectionBand in the shader).</summary>
+        public const float NormalRejectionBand = 0.25f;
+
+        /// <summary>
+        /// Highest <see cref="NormalRejection"/> at which samples facing exactly like the texel still get
+        /// full weight; above it the fade would end beyond a dot product of 1 and remove the smooth term.
+        /// </summary>
+        public const float MaxNormalRejection = 1f - NormalRejectionBand;
+
         [Tooltip("Output texture resolution.")]
         public int Resolution = 2048;
 
@@ -96,7 +105,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             Strength = Mathf.Max(Strength, 0f);
             EdgeWidth = Mathf.Max(EdgeWidth, 1e-5f);
             EdgeStrength = Mathf.Max(EdgeStrength, 0f);
-            NormalRejection = Mathf.Clamp(NormalRejection, -1f, 1f);
+            NormalRejection = Mathf.Clamp(NormalRejection, -1f, MaxNormalRejection);
             BlurPasses = Mathf.Clamp(BlurPasses, 0, 16);
             DilationPixels = Mathf.Clamp(DilationPixels, 0, 64);
         }
