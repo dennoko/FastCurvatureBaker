@@ -250,10 +250,10 @@
 }
 
 .dennoko-root .unity-toggle:checked .unity-toggle__checkmark {
-    /* チェックグリフのみのアイコンを暗色 tint (乗算) で濃い黒に沈めて重ねる。
-       白背景 × 濃黒グリフなのでテーマ非依存でクッキリ視認できる。 */
+    /* チェックグリフのみのアイコンをダークグレー tint (乗算) で重ねる。
+       白背景 × ダークグレーなのでテーマ非依存で自然に視認できる。 */
     background-image: resource("d_checkmark");
-    -unity-background-image-tint-color: #000000;
+    -unity-background-image-tint-color: var(--dennoko-surface-2);
 }
 
 /* ─── ⑤ フォールドアウト (Foldout) ───────────────────────── */
