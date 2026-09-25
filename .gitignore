@@ -1,0 +1,9 @@
+.claude/
+*.user
+*.userprefs
+*.pidb
+*.suo
+.vs/
+.idea/
+*.sln
+*.csproj
