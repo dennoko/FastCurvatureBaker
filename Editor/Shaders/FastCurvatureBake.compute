@@ -15,12 +15,13 @@
 StructuredBuffer<float3> _Positions;
 StructuredBuffer<float3> _Normals;
 StructuredBuffer<float2> _UVs;
-StructuredBuffer<uint>   _Components;
+StructuredBuffer<uint>   _Patches;          // smooth-patch id per vertex
+StructuredBuffer<uint>   _PatchComponents;  // connected-part id per patch
 StructuredBuffer<uint>   _Triangles;
 
 // ---------------------------------------------------------------------------
 // G-buffer
-//   _GPosition: xyz = world position, w = component id + 1 (0 = empty texel)
+//   _GPosition: xyz = world position, w = patch id + 1 (0 = empty texel)
 //   _GNormal:   octahedral-encoded shading normal (16 + 16 bit)
 // ---------------------------------------------------------------------------
 RWStructuredBuffer<float4> _GPosition;
@@ -33,11 +34,26 @@ struct SurfaceSample
 {
     float3 position;
     float3 normal;
-    uint   component;
+    uint   patchId;
     float  weight;
 };
 StructuredBuffer<SurfaceSample> _Samples;
 StructuredBuffer<uint2>         _Buckets; // (start, count)
+
+// ---------------------------------------------------------------------------
+// Hard-edge segments in a second hashed grid (see HardEdgeSegments.cs)
+// ---------------------------------------------------------------------------
+struct EdgeSegment
+{
+    float3 a;
+    float3 b;
+    float3 faceNormalA;
+    float3 faceNormalB;
+    float  value;      // +1 = 90-degree convex, -1 = 90-degree concave
+    uint   component;
+};
+StructuredBuffer<EdgeSegment> _Edges;
+StructuredBuffer<uint2>       _EdgeBuckets;
 
 // ---------------------------------------------------------------------------
 // Images: x = curvature value, y = coverage (1 = valid, 0 = empty)
@@ -59,13 +75,23 @@ float3 _GridOrigin;
 float  _InvCellSize;
 uint   _HashMask;
 
+float3 _EdgeGridOrigin;
+float  _EdgeInvCellSize;
+uint   _EdgeHashMask;
+uint   _EdgeCount;      // 0 = no hard edges bound
+
 float  _Radius;
+float  _Strength;
 float  _NormalRejection;
 float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator
 uint   _SameComponentOnly;
+float  _EdgeWidth;
+float  _EdgeStrength;
 
 static const float ConservativeRadius = 0.75; // pixels
 static const float RejectionBand      = 0.25; // normal-dot range over which rejection fades in
+static const float EdgeFacingMin      = 0.3;  // texel normal vs. edge face normal: fade-in range
+static const float EdgeFacingMax      = 0.6;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,6 +141,21 @@ int3 NeighbourOffset(uint i)
     return int3(uint3(i % 3u, (i / 3u) % 3u, i / 9u)) - 1;
 }
 
+// Bucket of the i-th cell of the 3x3x3 neighbourhood, or 0xFFFFFFFF when an earlier cell
+// already hashed to the same bucket (distinct cells may collide; visit each bucket once).
+// Recomputing earlier hashes keeps this in registers (no indexable array).
+uint NeighbourBucket(int3 cell, uint i, uint mask)
+{
+    uint bucket = HashCell(cell + NeighbourOffset(i)) & mask;
+    [unroll(27)]
+    for (uint j = 0; j < i; j++)
+    {
+        if ((HashCell(cell + NeighbourOffset(j)) & mask) == bucket)
+            return 0xFFFFFFFF;
+    }
+    return bucket;
+}
+
 bool LoadTriangle(uint t, out uint i0, out uint i1, out uint i2, out float2 a, out float2 b, out float2 c)
 {
     i0 = _Triangles[t * 3 + 0];
@@ -131,7 +172,7 @@ void WriteTexel(uint index, uint i0, uint i1, uint i2, float3 w)
 {
     float3 position = w.x * _Positions[i0] + w.y * _Positions[i1] + w.z * _Positions[i2];
     float3 normal   = w.x * _Normals[i0]   + w.y * _Normals[i1]   + w.z * _Normals[i2];
-    _GPosition[index] = float4(position, (float)(_Components[i0] + 1));
+    _GPosition[index] = float4(position, (float)(_Patches[i0] + 1));
     _GNormal[index]   = EncodeNormal(SafeNormalize(normal, _Normals[i0]));
 }
 
@@ -236,45 +277,39 @@ void RasterConservative(uint3 id : SV_DispatchThreadID)
 // ---------------------------------------------------------------------------
 // EvaluateCurvature — 1 thread per texel in [_Offset, _End).
 //
-// Aggregates the surface samples within _Radius of the texel's surface point p
-// using the kernel w = area * (1 - d^2 / r^2)^2, then estimates the mean
-// curvature H two ways (n_avg = normalized weighted average sample normal):
+// The result is the sum of two terms:
 //
-//   Shading normals: H = sum(w * dot(n_i - n_avg, d_i)) / sum(w * |d_i|^2)
-//                    Ratio of sums, not a mean of per-sample ratios: across a
-//                    hard edge dn stays finite as d -> 0, so per-sample
-//                    dn.d / d^2 diverges like 1/d and turns into heavy noise.
-//                    Referencing n_avg rather than the texel's own normal keeps
-//                    the response symmetric and peaked on the edge itself.
-//                    Exact for spheres (dn = d / R).
-//   Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
-//                    (E[d^2] = r^2 / 4 under this kernel; exact for spheres)
+// 1) Smooth term (width = _Radius). Aggregates the surface samples within
+//    _Radius of the texel's surface point p using the kernel
+//    w = area * (1 - d^2 / r^2)^2 and estimates the mean curvature H
+//    (n_avg = normalized weighted average sample normal):
 //
-// Samples facing away from the texel normal fade out over RejectionBand above
-// _NormalRejection instead of dropping abruptly, avoiding banding at sharp edges.
+//    Shading normals: H = sum(w * dot(n_i - n_avg, d_i)) / sum(w * |d_i|^2)
+//                     Ratio of sums, not a mean of per-sample ratios: where dn
+//                     stays finite as d -> 0, per-sample dn.d / d^2 diverges
+//                     like 1/d and turns into heavy noise. Referencing n_avg
+//                     rather than the texel's own normal keeps the response
+//                     symmetric. Exact for spheres (dn = d / R).
+//    Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
+//                     (E[d^2] = r^2 / 4 under this kernel; exact for spheres)
 //
-// Output is the dimensionless H * r: +1 for a sphere of radius r, 0 when flat.
+//    Samples on the same mesh part but a different smooth patchId lie across a
+//    hard edge and are skipped: hard edges belong to the edge term, so their
+//    width does not depend on _Radius. Samples facing away from the texel
+//    normal fade out over RejectionBand above _NormalRejection.
+//
+// 2) Edge term (width = _EdgeWidth). The strongest nearby hard edge of the
+//    same part, weighted by (1 - dist^2 / width^2)^2 and by how well the texel
+//    faces one of the edge's two faces.
+//
+// Output: _Strength * H * r + _EdgeStrength * edge. +1 = a sphere of radius r
+// or a 90-degree convex edge at full strength; 0 = flat.
 // ---------------------------------------------------------------------------
-[numthreads(64, 1, 1)]
-void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
+float SmoothCurvature(float3 p, float3 np, uint patchId, uint component)
 {
-    uint index = id.x + _Offset;
-    if (index >= _End) return;
-
-    float4 g = _GPosition[index];
-    if (g.w < 0.5)
-    {
-        _Result[index] = float2(0, 0);
-        return;
-    }
-
-    float3 p         = g.xyz;
-    uint   component = (uint)(g.w + 0.5) - 1;
-    float3 np        = DecodeNormal(_GNormal[index]);
-
-    float r2      = _Radius * _Radius;
-    float invR2   = 1.0 / r2;
-    int3  cell    = (int3)floor((p - _GridOrigin) * _InvCellSize);
+    float r2    = _Radius * _Radius;
+    float invR2 = 1.0 / r2;
+    int3  cell  = (int3)floor((p - _GridOrigin) * _InvCellSize);
 
     float  sumW  = 0.0;
     float3 sumD  = float3(0, 0, 0); // sum(w * d)
@@ -285,21 +320,8 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
     [loop]
     for (uint i = 0; i < 27; i++)
     {
-        uint bucket = HashCell(cell + NeighbourOffset(i)) & _HashMask;
-
-        // Distinct cells may hash into the same bucket; visit each bucket once.
-        // Recomputing earlier hashes keeps this in registers (no indexable array).
-        bool seen = false;
-        [unroll(27)]
-        for (uint j = 0; j < i; j++)
-        {
-            if ((HashCell(cell + NeighbourOffset(j)) & _HashMask) == bucket)
-            {
-                seen = true;
-                break;
-            }
-        }
-        if (seen) continue;
+        uint bucket = NeighbourBucket(cell, i, _HashMask);
+        if (bucket == 0xFFFFFFFF) continue;
 
         uint2 range = _Buckets[bucket];
         uint end = range.x + range.y;
@@ -310,7 +332,13 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
             float3 d  = smp.position - p;
             float  d2 = dot(d, d);
             if (d2 >= r2) continue;
-            if (_SameComponentOnly != 0 && smp.component != component) continue;
+
+            if (smp.patchId != patchId)
+            {
+                uint sampleComponent = _PatchComponents[smp.patchId];
+                if (sampleComponent == component) continue; // across a hard edge
+                if (_SameComponentOnly != 0) continue;       // another mesh part
+            }
 
             float facing = smoothstep(_NormalRejection, _NormalRejection + RejectionBand, dot(smp.normal, np));
             if (facing <= 0.0) continue;
@@ -326,18 +354,77 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    float geometry = 0.0;
-    float shading  = 0.0;
-    if (sumW > 0.0)
+    if (sumW <= 0.0)
+        return 0.0;
+
+    float3 nAvg = SafeNormalize(sumN, np);
+    float geometry = -8.0 * dot(nAvg, sumD / sumW) / _Radius;
+    // sum(w * dot(n_i - nAvg, d_i)) expanded so it accumulates in one pass.
+    float shading = sumD2 > 0.0 ? (sumND - dot(nAvg, sumD)) / sumD2 * _Radius : 0.0;
+    return lerp(shading, geometry, _GeometryWeight);
+}
+
+float EdgeCurvature(float3 p, float3 np, uint component)
+{
+    if (_EdgeCount == 0)
+        return 0.0;
+
+    float w2   = _EdgeWidth * _EdgeWidth;
+    int3  cell = (int3)floor((p - _EdgeGridOrigin) * _EdgeInvCellSize);
+    float best = 0.0;
+
+    [loop]
+    for (uint i = 0; i < 27; i++)
     {
-        float3 nAvg = SafeNormalize(sumN, np);
-        geometry = -8.0 * dot(nAvg, sumD / sumW) / _Radius;
-        // sum(w * dot(n_i - nAvg, d_i)) expanded so it accumulates in one pass.
-        if (sumD2 > 0.0)
-            shading = (sumND - dot(nAvg, sumD)) / sumD2 * _Radius;
+        uint bucket = NeighbourBucket(cell, i, _EdgeHashMask);
+        if (bucket == 0xFFFFFFFF) continue;
+
+        uint2 range = _EdgeBuckets[bucket];
+        uint end = range.x + range.y;
+        [loop]
+        for (uint s = range.x; s < end; s++)
+        {
+            EdgeSegment edge = _Edges[s];
+            if (edge.component != component) continue;
+
+            float3 ab = edge.b - edge.a;
+            float  t  = saturate(dot(p - edge.a, ab) / max(dot(ab, ab), 1e-20));
+            float3 c  = edge.a + ab * t - p;
+            float  d2 = dot(c, c);
+            if (d2 >= w2) continue;
+
+            // Only surfaces adjacent to the edge, not e.g. the far side of a thin plate.
+            float facing = smoothstep(EdgeFacingMin, EdgeFacingMax,
+                                      max(dot(np, edge.faceNormalA), dot(np, edge.faceNormalB)));
+            float k = 1.0 - d2 / w2;
+            float v = edge.value * k * k * facing;
+            if (abs(v) > abs(best)) best = v;
+        }
+    }
+    return best;
+}
+
+[numthreads(64, 1, 1)]
+void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    float4 g = _GPosition[index];
+    if (g.w < 0.5)
+    {
+        _Result[index] = float2(0, 0);
+        return;
     }
 
-    _Result[index] = float2(lerp(shading, geometry, _GeometryWeight), 1.0);
+    float3 p         = g.xyz;
+    uint   patchId     = (uint)(g.w + 0.5) - 1;
+    uint   component = _PatchComponents[patchId];
+    float3 np        = DecodeNormal(_GNormal[index]);
+
+    float value = _Strength * SmoothCurvature(p, np, patchId, component)
+                + _EdgeStrength * EdgeCurvature(p, np, component);
+    _Result[index] = float2(value, 1.0);
 }
 
 // ---------------------------------------------------------------------------

@@ -31,10 +31,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private ComputeBuffer _positions;
         private ComputeBuffer _normals;
         private ComputeBuffer _uvs;
-        private ComputeBuffer _components;
+        private ComputeBuffer _patches;
+        private ComputeBuffer _patchComponents;
         private ComputeBuffer _samples;
         private ComputeBuffer _buckets;
-        private SpatialHashGrid _grid;
+        private ComputeBuffer _edges;
+        private ComputeBuffer _edgeBuckets;
+        private SpatialHashGrid<SurfaceSample> _grid;
+        private SpatialHashGrid<EdgeSegment> _edgeGrid;
 
         public CurvatureGpu(ComputeShader shader)
         {
@@ -48,22 +52,32 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _kDilate = FindKernel("Dilate");
         }
 
-        public void LoadMesh(SurfaceMesh mesh, SpatialHashGrid grid)
+        /// <param name="edgeGrid">Hard-edge segments, or null when the mesh has none.</param>
+        public void LoadMesh(SurfaceMesh mesh, SpatialHashGrid<SurfaceSample> grid, SpatialHashGrid<EdgeSegment> edgeGrid)
         {
             ReleaseMesh();
             _grid = grid;
+            _edgeGrid = edgeGrid;
             _positions = CreateBuffer(mesh.Positions, 12);
             _normals = CreateBuffer(mesh.Normals, 12);
             _uvs = CreateBuffer(mesh.UVs, 8);
-            _components = CreateBuffer(mesh.ComponentIds, 4);
-            _samples = CreateBuffer(grid.SortedSamples, SurfaceSample.Stride);
-            _buckets = new ComputeBuffer(grid.BucketCount, 8);
-            _buckets.SetData(grid.Buckets);
+            _patches = CreateBuffer(mesh.PatchIds, 4);
+            _patchComponents = CreateBuffer(mesh.PatchComponents, 4);
+            _samples = CreateBuffer(grid.SortedItems, SurfaceSample.Stride);
+            _buckets = CreateBucketBuffer(grid.Buckets);
+
+            // The kernel always references the edge buffers; bind placeholders when there are no edges.
+            _edges = edgeGrid != null
+                ? CreateBuffer(edgeGrid.SortedItems, EdgeSegment.Stride)
+                : new ComputeBuffer(1, EdgeSegment.Stride);
+            _edgeBuckets = edgeGrid != null
+                ? CreateBucketBuffer(edgeGrid.Buckets)
+                : new ComputeBuffer(1, 8);
         }
 
         /// <summary>
         /// Bakes one sub-mesh. Returns <c>Resolution²</c> texels, row-major from v = 0,
-        /// each holding (curvature * radius, coverage).
+        /// each holding (signed curvature with strengths applied, coverage).
         /// </summary>
         public async Task<Vector2[]> BakeSubMeshAsync(
             int[] triangles,
@@ -101,7 +115,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     _shader.SetBuffer(kernel, "_Positions", _positions);
                     _shader.SetBuffer(kernel, "_Normals", _normals);
                     _shader.SetBuffer(kernel, "_UVs", _uvs);
-                    _shader.SetBuffer(kernel, "_Components", _components);
+                    _shader.SetBuffer(kernel, "_Patches", _patches);
                     _shader.SetBuffer(kernel, "_Triangles", triangleBuffer);
                     _shader.SetBuffer(kernel, "_GPosition", gPosition);
                     _shader.SetBuffer(kernel, "_GNormal", gNormal);
@@ -116,13 +130,28 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 _shader.SetFloat("_InvCellSize", 1f / _grid.CellSize);
                 _shader.SetInt("_HashMask", (int)_grid.HashMask);
                 _shader.SetFloat("_Radius", settings.Radius);
+                _shader.SetFloat("_Strength", settings.Strength);
                 _shader.SetFloat("_NormalRejection", settings.NormalRejection);
                 _shader.SetFloat("_GeometryWeight", settings.Source == CurvatureSource.Geometry ? 1f : 0f);
                 _shader.SetInt("_SameComponentOnly", settings.SameComponentOnly ? 1 : 0);
+
+                _shader.SetInt("_EdgeCount", _edgeGrid != null ? _edgeGrid.SortedItems.Length : 0);
+                if (_edgeGrid != null)
+                {
+                    _shader.SetVector("_EdgeGridOrigin", _edgeGrid.Origin);
+                    _shader.SetFloat("_EdgeInvCellSize", 1f / _edgeGrid.CellSize);
+                    _shader.SetInt("_EdgeHashMask", (int)_edgeGrid.HashMask);
+                }
+                _shader.SetFloat("_EdgeWidth", settings.EdgeWidth);
+                _shader.SetFloat("_EdgeStrength", settings.EdgeStrength);
+
                 _shader.SetBuffer(_kEvaluate, "_GPosition", gPosition);
                 _shader.SetBuffer(_kEvaluate, "_GNormal", gNormal);
+                _shader.SetBuffer(_kEvaluate, "_PatchComponents", _patchComponents);
                 _shader.SetBuffer(_kEvaluate, "_Samples", _samples);
                 _shader.SetBuffer(_kEvaluate, "_Buckets", _buckets);
+                _shader.SetBuffer(_kEvaluate, "_Edges", _edges);
+                _shader.SetBuffer(_kEvaluate, "_EdgeBuckets", _edgeBuckets);
                 _shader.SetBuffer(_kEvaluate, "_Result", result);
 
                 await DispatchAdaptiveAsync(_kEvaluate, texels, result,
@@ -184,10 +213,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _positions?.Release(); _positions = null;
             _normals?.Release(); _normals = null;
             _uvs?.Release(); _uvs = null;
-            _components?.Release(); _components = null;
+            _patches?.Release(); _patches = null;
+            _patchComponents?.Release(); _patchComponents = null;
             _samples?.Release(); _samples = null;
             _buckets?.Release(); _buckets = null;
+            _edges?.Release(); _edges = null;
+            _edgeBuckets?.Release(); _edgeBuckets = null;
             _grid = null;
+            _edgeGrid = null;
         }
 
         private void PingPong(int kernel, ref ComputeBuffer current, ref ComputeBuffer spare, int width)
@@ -271,6 +304,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             var buffer = new ComputeBuffer(data.Length, stride);
             buffer.SetData(data);
+            return buffer;
+        }
+
+        /// <summary>Uploads an interleaved (start, count) table as one uint2 element per bucket.</summary>
+        private static ComputeBuffer CreateBucketBuffer(uint[] buckets)
+        {
+            var buffer = new ComputeBuffer(buckets.Length / 2, 8);
+            buffer.SetData(buckets);
             return buffer;
         }
 

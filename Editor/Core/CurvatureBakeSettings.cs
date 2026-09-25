@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
@@ -12,13 +13,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         Geometry = 1,
     }
 
-    public enum CurvatureOutputMode
+    /// <summary>What the baked texture represents.</summary>
+    public enum CurvatureBakeMode
     {
-        /// <summary>0.5 = flat, brighter = convex, darker = concave.</summary>
-        Combined = 0,
-        /// <summary>Convex areas only (edge highlight mask).</summary>
+        /// <summary>Signed curvature: 0.5 = flat, brighter = convex, darker = concave.</summary>
+        Default = 0,
+        /// <summary>Convex emphasis: white on convex edges, black elsewhere (edge wear / scratch mask).</summary>
         Convex = 1,
-        /// <summary>Concave areas only (cavity mask).</summary>
+        /// <summary>Concave emphasis: white in concave creases, black elsewhere (dirt / grime mask).</summary>
         Concave = 2,
     }
 
@@ -43,15 +45,22 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         [Tooltip("UV channel used for baking (0-7).")]
         public int UVChannel = 0;
 
-        [Tooltip("World-space radius used to measure curvature. Controls the width of edge highlights.")]
+        [FormerlySerializedAs("OutputMode")]
+        public CurvatureBakeMode Mode = CurvatureBakeMode.Default;
+
+        [Tooltip("World-space radius used to measure curvature of smooth surfaces. Hard edges use Edge Width instead.")]
         public float Radius = 0.01f;
+
+        [Tooltip("World-space distance from a hard edge (split normals) over which the edge is treated as convex/concave.")]
+        public float EdgeWidth = 0.003f;
+
+        [Tooltip("Intensity of hard edges. A 90-degree edge reaches full intensity at 1.")]
+        public float EdgeStrength = 1f;
 
         [Tooltip("Output intensity. A sphere whose radius equals Radius reaches full intensity at 1.")]
         public float Strength = 1f;
 
         public CurvatureSource Source = CurvatureSource.ShadingNormals;
-
-        public CurvatureOutputMode OutputMode = CurvatureOutputMode.Combined;
 
         public BakeQuality Quality = BakeQuality.Standard;
 
@@ -82,6 +91,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             UVChannel = Mathf.Clamp(UVChannel, 0, 7);
             Radius = Mathf.Max(Radius, 1e-5f);
             Strength = Mathf.Max(Strength, 0f);
+            EdgeWidth = Mathf.Max(EdgeWidth, 1e-5f);
+            EdgeStrength = Mathf.Max(EdgeStrength, 0f);
             NormalRejection = Mathf.Clamp(NormalRejection, -1f, 1f);
             BlurPasses = Mathf.Clamp(BlurPasses, 0, 16);
             DilationPixels = Mathf.Clamp(DilationPixels, 0, 64);
@@ -106,17 +117,33 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         }
 
         /// <summary>Background value written outside UV islands.</summary>
-        public float BackgroundValue => OutputMode == CurvatureOutputMode.Combined ? 0.5f : 0f;
+        public float BackgroundValue => Mode == CurvatureBakeMode.Default ? 0.5f : 0f;
 
-        /// <summary>Maps a dimensionless curvature value (H * radius) to the [0, 1] output range.</summary>
+        /// <summary>File name suffix, so the three modes can be baked side by side.</summary>
+        public string FileSuffix
+        {
+            get
+            {
+                switch (Mode)
+                {
+                    case CurvatureBakeMode.Convex: return "_Convex";
+                    case CurvatureBakeMode.Concave: return "_Concave";
+                    default: return "_Curvature";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Maps a signed curvature value (+1 = sphere of radius Radius or a 90-degree convex edge,
+        /// strengths already applied) to the [0, 1] output range.
+        /// </summary>
         public float MapValue(float curvature)
         {
-            float v = curvature * Strength;
-            switch (OutputMode)
+            switch (Mode)
             {
-                case CurvatureOutputMode.Convex: return Mathf.Clamp01(v);
-                case CurvatureOutputMode.Concave: return Mathf.Clamp01(-v);
-                default: return Mathf.Clamp01(0.5f + 0.5f * v);
+                case CurvatureBakeMode.Convex: return Mathf.Clamp01(curvature);
+                case CurvatureBakeMode.Concave: return Mathf.Clamp01(-curvature);
+                default: return Mathf.Clamp01(0.5f + 0.5f * curvature);
             }
         }
 

@@ -176,8 +176,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             }
 
             // 1% margin: CPU and GPU may floor a cell coordinate differently right on a boundary.
-            SpatialHashGrid grid = SpatialHashGrid.Build(samples, mesh.Bounds, settings.Radius * 1.01f);
-            gpu.LoadMesh(mesh, grid);
+            var grid = SpatialHashGrid<SurfaceSample>.Build(
+                samples, s => s.Position, mesh.Bounds, settings.Radius * 1.01f);
+
+            SpatialHashGrid<EdgeSegment> edgeGrid = null;
+            if (mesh.HardEdges.Count > 0 && settings.EdgeStrength > 0f)
+            {
+                EdgeSegment[] segments = HardEdgeSegments.Build(mesh.HardEdges, settings.EdgeWidth, out float edgeCell);
+                edgeGrid = SpatialHashGrid<EdgeSegment>.Build(segments, e => e.Midpoint, mesh.Bounds, edgeCell);
+            }
+            Debug.Log($"{LogPrefix} '{renderer.name}': {samples.Length} samples, {mesh.HardEdges.Count} hard edges, " +
+                      $"{mesh.ComponentCount} parts.");
+            gpu.LoadMesh(mesh, grid, edgeGrid);
 
             Material[] materials = renderer.sharedMaterials;
             for (int i = 0; i < subMeshes.Count; i++)
@@ -200,6 +210,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 string assetPath = ReservePath(
                     CurvatureTextureExporter.ResolveOutputFolder(material),
                     CurvatureTextureExporter.SanitizeFileName(baseName),
+                    settings.FileSuffix,
                     usedPaths);
 
                 string saved = CurvatureTextureExporter.Save(data, settings.Resolution, settings, assetPath);
@@ -209,14 +220,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         }
 
         /// <summary>
-        /// Picks <c>{folder}/{name}_Curvature.png</c>, adding a number when an earlier texture of this run
+        /// Picks <c>{folder}/{name}{suffix}.png</c>, adding a number when an earlier texture of this run
         /// already took that path (e.g. two renderers with the same name).
         /// </summary>
-        private static string ReservePath(string folder, string name, HashSet<string> usedPaths)
+        private static string ReservePath(string folder, string name, string suffix, HashSet<string> usedPaths)
         {
-            string path = $"{folder}/{name}_Curvature.png";
+            string path = $"{folder}/{name}{suffix}.png";
             for (int n = 2; usedPaths.Contains(path); n++)
-                path = $"{folder}/{name}_{n}_Curvature.png";
+                path = $"{folder}/{name}_{n}{suffix}.png";
             usedPaths.Add(path);
             return path;
         }

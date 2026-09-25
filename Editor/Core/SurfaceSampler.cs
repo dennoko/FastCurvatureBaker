@@ -9,7 +9,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     {
         public Vector3 Position;
         public Vector3 Normal;
-        public uint Component;
+        public uint Patch;     // smooth-patch id (see SurfaceMesh.PatchIds)
         public float Weight; // represented surface area
 
         public const int Stride = 32;
@@ -62,7 +62,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     float area = mesh.TriangleArea(i0, i1, i2);
                     int k = SamplesForTriangle(area, invCellArea);
                     float weight = area / k;
-                    uint component = mesh.ComponentIds[i0];
+                    uint patch = mesh.PatchIds[i0];
 
                     // Per-triangle offset decorrelates the sequence between neighbouring triangles.
                     uint h = Hash((uint)written);
@@ -93,7 +93,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                             Position = w0 * mesh.Positions[i0] + u * mesh.Positions[i1] + v * mesh.Positions[i2],
                             Normal = SurfaceMesh.SafeNormalize(
                                 w0 * mesh.Normals[i0] + u * mesh.Normals[i1] + v * mesh.Normals[i2]),
-                            Component = component,
+                            Patch = patch,
                             Weight = weight,
                         };
                     }

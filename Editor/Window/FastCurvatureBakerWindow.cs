@@ -14,6 +14,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     {
         private const string Title = "Fast Curvature Baker";
 
+        private static readonly GUIContent[] ModeLabels =
+        {
+            new GUIContent("Default"),
+            new GUIContent("Convex (edge wear mask)"),
+            new GUIContent("Concave (dirt mask)"),
+        };
+
         [SerializeField] private List<GameObject> _targets = new List<GameObject>();
         [SerializeField] private CurvatureBakeSettings _settings = new CurvatureBakeSettings();
         [SerializeField] private bool _showAdvanced;
@@ -83,20 +90,39 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             EditorGUI.BeginChangeCheck();
             var s = _settings.Clone();
 
+            s.Mode = (CurvatureBakeMode)EditorGUILayout.Popup(
+                new GUIContent("Bake Mode", "Default: signed curvature (0.5 = flat).\n" +
+                                            "Convex: white on convex edges, for edge wear / scratch masks.\n" +
+                                            "Concave: white in creases, for dirt / grime masks."),
+                (int)s.Mode, ModeLabels);
             s.Resolution = EditorGUILayout.IntPopup("Resolution", s.Resolution,
                 CurvatureBakeSettings.SupportedResolutions.Select(r => r.ToString()).ToArray(),
                 CurvatureBakeSettings.SupportedResolutions);
             s.UVChannel = EditorGUILayout.IntPopup("UV Channel", s.UVChannel,
                 Enumerable.Range(0, 8).Select(i => $"UV{i}").ToArray(),
                 Enumerable.Range(0, 8).ToArray());
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Hard Edges", EditorStyles.miniBoldLabel);
+            s.EdgeWidth = EditorGUILayout.FloatField(
+                new GUIContent("Edge Width (m)", "Distance from a hard edge (split normals) that is treated as convex/concave. " +
+                                                 "Make it small for thin wear lines on metal corners."),
+                s.EdgeWidth);
+            s.EdgeStrength = EditorGUILayout.Slider(
+                new GUIContent("Edge Strength", "A 90-degree edge reaches full intensity at 1. 0 disables hard edges."),
+                s.EdgeStrength, 0f, 4f);
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Smooth Surfaces", EditorStyles.miniBoldLabel);
             s.Radius = EditorGUILayout.FloatField(
-                new GUIContent("Radius (m)", "World-space radius used to measure curvature. Controls the width of edge highlights."),
+                new GUIContent("Radius (m)", "Radius used to measure the curvature of smooth (non hard-edge) surfaces."),
                 s.Radius);
             s.Strength = EditorGUILayout.Slider("Strength", s.Strength, 0f, 4f);
             s.Source = (CurvatureSource)EditorGUILayout.EnumPopup(
                 new GUIContent("Source", "Shading Normals: smooth, follows shading. Geometry: every polygon crease."),
                 s.Source);
-            s.OutputMode = (CurvatureOutputMode)EditorGUILayout.EnumPopup("Output", s.OutputMode);
+
+            EditorGUILayout.Space();
             s.Quality = (BakeQuality)EditorGUILayout.EnumPopup("Quality", s.Quality);
             s.Supersample = EditorGUILayout.Toggle(
                 new GUIContent("Supersample 2x", "Ignored when the resolution is " + CurvatureBakeSettings.MaxInternalResolution + "."),
