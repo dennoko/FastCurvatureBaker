@@ -6,7 +6,6 @@ using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
-using static DennokoWorks.Tool.FastCurvatureBaker.FastCurvatureBakerLoc;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
@@ -17,6 +16,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     public sealed class FastCurvatureBakerWindow : EditorWindow
     {
         private const string Title = "Fast Curvature Baker";
+
+        private static string Tr(string ja, string en) => FastCurvatureBakerLoc.Tr(ja, en);
+        private static string Tr(string ja, string en, params object[] args) => FastCurvatureBakerLoc.Tr(ja, en, args);
+        private static bool IsJapanese => FastCurvatureBakerLoc.IsJapanese;
 
         private const string UXML_GUID = "0123456789abcdef0123456789abcde6";
         private const string USS_GUID  = "e123456789abcdef0123456789abcde4";
@@ -67,12 +70,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private Label _outputCardTitle;
         private Toggle _overwriteToggle;
         private Label _outputInfoLabel;
-
-        private Label _guideCardTitle;
-        private Label _guideTitle;
-        private Label _guideDesc;
-        private Label _guideInc;
-        private Label _guideDec;
 
         private Button _bakeButton;
         private Button _resetSettingsButton;
@@ -252,13 +249,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _outputCardTitle = root.Q<Label>("output-card-title");
             _overwriteToggle = root.Q<Toggle>("overwrite-toggle");
             _outputInfoLabel = root.Q<Label>("output-info-label");
-
-            // ガイドパネル
-            _guideCardTitle = root.Q<Label>("guide-card-title");
-            _guideTitle = root.Q<Label>("guide-title");
-            _guideDesc = root.Q<Label>("guide-desc");
-            _guideInc = root.Q<Label>("guide-inc");
-            _guideDec = root.Q<Label>("guide-dec");
 
             // アクションボタン
             _bakeButton = root.Q<Button>("bake-button");
@@ -504,9 +494,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     $"Output: <base texture folder>/{CurvatureTextureExporter.OutputFolderName}/ (or {CurvatureTextureExporter.FallbackFolder}/ if no texture)");
             }
 
-            if (_guideCardTitle != null) _guideCardTitle.text = Tr("項目解説 (マウスオーバー)", "PROPERTY GUIDE");
-            ResetGuideBox();
-
             if (_bakeButton != null)
                 _bakeButton.text = IsBaking ? Tr("ベイク中...", "Baking...") : Tr("曲率テクスチャをベイク", "Bake Curvature");
             if (_resetSettingsButton != null)
@@ -736,7 +723,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             });
         }
 
-        private void AttachExplanation(VisualElement element, PropertyExplanation exp)
+        private static void AttachExplanation(VisualElement element, PropertyExplanation exp)
         {
             if (element == null) return;
 
@@ -747,27 +734,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 fullTooltip += $"\n{exp.DecreaseImpact}";
 
             element.tooltip = fullTooltip;
-
-            element.RegisterCallback<MouseEnterEvent>(_ =>
-            {
-                if (_guideTitle != null) _guideTitle.text = exp.Name;
-                if (_guideDesc != null) _guideDesc.text = exp.Description;
-                if (_guideInc != null) _guideInc.text = exp.IncreaseImpact;
-                if (_guideDec != null) _guideDec.text = exp.DecreaseImpact;
-            });
-
-            element.RegisterCallback<MouseLeaveEvent>(_ =>
-            {
-                ResetGuideBox();
-            });
-        }
-
-        private void ResetGuideBox()
-        {
-            if (_guideTitle != null) _guideTitle.text = Tr("各項目にカーソルを合わせると説明が表示されます", "Hover over any property to view details");
-            if (_guideDesc != null) _guideDesc.text = Tr("各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。", "Explanations and impacts of increasing/decreasing values will be displayed here.");
-            if (_guideInc != null) _guideInc.text = "";
-            if (_guideDec != null) _guideDec.text = "";
         }
 
         // ─── ターゲット管理 (Targets) ───────────────────────────────────────

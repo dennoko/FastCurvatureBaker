@@ -613,15 +613,6 @@
     background-color: var(--dennoko-surface-2);
 }
 
-/* 設定項目解説ボックス */
-.dennoko-root .dennoko-guide-box {
-    background-color: var(--dennoko-surface-0);
-    border-color: var(--dennoko-outline);
-    border-width: 1px;
-    border-radius: 4px;
-    padding: 8px 10px;
-    margin-top: 2px;
-}
 
 /* 汎用 flex 伸縮 */
 .dennoko-root .dennoko-col-grow {

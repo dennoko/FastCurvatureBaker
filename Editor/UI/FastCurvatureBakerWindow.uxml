@@ -69,17 +69,6 @@
             <ui:Label name="output-info-label" text="出力先: &lt;ベーステクスチャのフォルダ&gt;/BakedCurvature/ (テクスチャがない場合は Assets/BakedCurvature/)" class="dennoko-text-tertiary" style="font-size: 11px; white-space: normal; margin-top: 4px;" />
         </ui:VisualElement>
 
-        <!-- 項目解説カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Label name="guide-card-title" text="項目解説 (マウスオーバー)" class="dennoko-section-title dennoko-card-header" />
-            <ui:VisualElement class="dennoko-guide-box">
-                <ui:Label name="guide-title" text="各項目にカーソルを合わせると説明が表示されます" class="dennoko-text-primary" style="font-size: 11px; -unity-font-style: bold; margin-bottom: 4px;" />
-                <ui:Label name="guide-desc" text="各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。" class="dennoko-text-secondary" style="font-size: 11px; white-space: normal; margin-bottom: 4px;" />
-                <ui:Label name="guide-inc" text="" class="dennoko-text-info" style="font-size: 10px; white-space: normal; margin-bottom: 2px;" />
-                <ui:Label name="guide-dec" text="" class="dennoko-text-warning" style="font-size: 10px; white-space: normal;" />
-            </ui:VisualElement>
-        </ui:VisualElement>
-
     </ui:ScrollView>
 
     <ui:VisualElement class="dennoko-separator" />
