@@ -17,11 +17,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private const int MaxElementsPerDispatch = GroupSize * 65535;
         private const double TargetDispatchMs = 150.0;
         private const long YieldIntervalMs = 100;
+        private const int MaxChunk = 1 << 20;
 
         private readonly ComputeShader _shader;
         private readonly int _kClear;
         private readonly int _kRasterInterior;
-        private readonly int _kRasterConservative;
+        private readonly int _kRasterDistance;
+        private readonly int _kRasterOwner;
+        private readonly int _kResolve;
         private readonly int _kEvaluate;
         private readonly int _kDownsample;
         private readonly int _kBlur;
@@ -30,7 +33,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         // Per-mesh resources
         private ComputeBuffer _positions;
         private ComputeBuffer _normals;
-        private ComputeBuffer _uvs;
+        private ComputeBuffer _uvsBuffer;
+        private Vector2[] _uvs;
         private ComputeBuffer _patches;
         private ComputeBuffer _patchComponents;
         private ComputeBuffer _samples;
@@ -45,7 +49,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _shader = shader != null ? shader : throw new ArgumentNullException(nameof(shader));
             _kClear = FindKernel("ClearGBuffer");
             _kRasterInterior = FindKernel("RasterInterior");
-            _kRasterConservative = FindKernel("RasterConservative");
+            _kRasterDistance = FindKernel("RasterConservativeDistance");
+            _kRasterOwner = FindKernel("RasterConservativeOwner");
+            _kResolve = FindKernel("ResolveGBuffer");
             _kEvaluate = FindKernel("EvaluateCurvature");
             _kDownsample = FindKernel("Downsample");
             _kBlur = FindKernel("Blur");
@@ -60,18 +66,19 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _edgeGrid = edgeGrid;
             _positions = CreateBuffer(mesh.Positions, 12);
             _normals = CreateBuffer(mesh.Normals, 12);
-            _uvs = CreateBuffer(mesh.UVs, 8);
+            _uvs = mesh.UVs;
+            _uvsBuffer = CreateBuffer(mesh.UVs, 8);
             _patches = CreateBuffer(mesh.PatchIds, 4);
             _patchComponents = CreateBuffer(mesh.PatchComponents, 4);
             _samples = CreateBuffer(grid.SortedItems, SurfaceSample.Stride);
-            _buckets = CreateBucketBuffer(grid.Buckets);
+            _buckets = CreatePairBuffer(grid.Buckets);
 
             // The kernel always references the edge buffers; bind placeholders when there are no edges.
             _edges = edgeGrid != null
                 ? CreateBuffer(edgeGrid.SortedItems, EdgeSegment.Stride)
                 : new ComputeBuffer(1, EdgeSegment.Stride);
             _edgeBuckets = edgeGrid != null
-                ? CreateBucketBuffer(edgeGrid.Buckets)
+                ? CreatePairBuffer(edgeGrid.Buckets)
                 : new ComputeBuffer(1, 8);
         }
 
@@ -91,37 +98,59 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             int outputRes = settings.Resolution;
             int res = outputRes * settings.SupersampleFactor;
             int texels = res * res;
-            int triangleCount = triangles.Length / 3;
 
-            ComputeBuffer triangleBuffer = null, gPosition = null, gNormal = null;
+            ComputeBuffer triangleBuffer = null, tileBuffer = null, gOwner = null, gPosition = null, gNormal = null;
             ComputeBuffer result = null, pingA = null, pingB = null;
             try
             {
+                progress(0f, "Rasterizing UV");
+                uint[] tiles = UvLayout.BuildRasterTiles(triangles, _uvs, res, out int tileSize);
+                int tileCount = tiles.Length / 2;
+                token.ThrowIfCancellationRequested();
+
                 triangleBuffer = CreateBuffer(triangles, 4);
+                gOwner = new ComputeBuffer(texels, 4);
                 gPosition = new ComputeBuffer(texels, 16);
-                gNormal = new ComputeBuffer(texels, 4);
+                gNormal = new ComputeBuffer(texels, 4); // also the conservative passes' distance scratch (_GDist)
                 result = new ComputeBuffer(texels, 8);
 
                 // ---- G-buffer ----
-                progress(0f, "Rasterizing UV");
                 _shader.SetInt("_Width", res);
+                _shader.SetInt("_TileSize", tileSize);
 
-                _shader.SetBuffer(_kClear, "_GPosition", gPosition);
-                _shader.SetBuffer(_kClear, "_GNormal", gNormal);
+                _shader.SetBuffer(_kClear, "_GOwner", gOwner);
+                _shader.SetBuffer(_kClear, "_GDist", gNormal);
                 Dispatch1D(_kClear, texels);
 
-                foreach (int kernel in new[] { _kRasterInterior, _kRasterConservative })
+                if (tileCount > 0)
                 {
-                    _shader.SetBuffer(kernel, "_Positions", _positions);
-                    _shader.SetBuffer(kernel, "_Normals", _normals);
-                    _shader.SetBuffer(kernel, "_UVs", _uvs);
-                    _shader.SetBuffer(kernel, "_Patches", _patches);
-                    _shader.SetBuffer(kernel, "_Triangles", triangleBuffer);
-                    _shader.SetBuffer(kernel, "_GPosition", gPosition);
-                    _shader.SetBuffer(kernel, "_GNormal", gNormal);
-                    Dispatch1D(kernel, triangleCount);
+                    tileBuffer = CreatePairBuffer(tiles);
+                    var passes = new[] { _kRasterInterior, _kRasterDistance, _kRasterOwner };
+                    for (int i = 0; i < passes.Length; i++)
+                    {
+                        int kernel = passes[i];
+                        _shader.SetBuffer(kernel, "_UVs", _uvsBuffer);
+                        _shader.SetBuffer(kernel, "_Triangles", triangleBuffer);
+                        _shader.SetBuffer(kernel, "_RasterTiles", tileBuffer);
+                        _shader.SetBuffer(kernel, "_GOwner", gOwner);
+                        _shader.SetBuffer(kernel, "_GDist", gNormal);
+                        int pass = i;
+                        await DispatchAdaptiveAsync(kernel, tileCount, gOwner, 4,
+                            p => progress(0.05f * (pass + p) / passes.Length, "Rasterizing UV"), token);
+                    }
+                    tileBuffer.Release(); tileBuffer = null;
                 }
-                WaitForGpu(gNormal, 4, 0);
+
+                _shader.SetBuffer(_kResolve, "_Positions", _positions);
+                _shader.SetBuffer(_kResolve, "_Normals", _normals);
+                _shader.SetBuffer(_kResolve, "_UVs", _uvsBuffer);
+                _shader.SetBuffer(_kResolve, "_Patches", _patches);
+                _shader.SetBuffer(_kResolve, "_Triangles", triangleBuffer);
+                _shader.SetBuffer(_kResolve, "_GOwner", gOwner);
+                _shader.SetBuffer(_kResolve, "_GPosition", gPosition);
+                _shader.SetBuffer(_kResolve, "_GNormal", gNormal);
+                Dispatch1D(_kResolve, texels);
+                WaitForGpu(gNormal, 4);
                 await Task.Yield();
                 token.ThrowIfCancellationRequested();
 
@@ -154,9 +183,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 _shader.SetBuffer(_kEvaluate, "_EdgeBuckets", _edgeBuckets);
                 _shader.SetBuffer(_kEvaluate, "_Result", result);
 
-                await DispatchAdaptiveAsync(_kEvaluate, texels, result,
+                await DispatchAdaptiveAsync(_kEvaluate, texels, result, 8,
                     p => progress(0.05f + 0.85f * p, "Evaluating curvature"), token);
 
+                gOwner.Release(); gOwner = null;
                 gPosition.Release(); gPosition = null;
                 gNormal.Release(); gNormal = null;
                 triangleBuffer.Release(); triangleBuffer = null;
@@ -198,6 +228,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             finally
             {
                 triangleBuffer?.Release();
+                tileBuffer?.Release();
+                gOwner?.Release();
                 gPosition?.Release();
                 gNormal?.Release();
                 result?.Release();
@@ -212,7 +244,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             _positions?.Release(); _positions = null;
             _normals?.Release(); _normals = null;
-            _uvs?.Release(); _uvs = null;
+            _uvsBuffer?.Release(); _uvsBuffer = null;
+            _uvs = null;
             _patches?.Release(); _patches = null;
             _patchComponents?.Release(); _patchComponents = null;
             _samples?.Release(); _samples = null;
@@ -245,9 +278,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// <summary>
         /// Splits a heavy dispatch into chunks sized to take about <see cref="TargetDispatchMs"/> each,
         /// waiting for every chunk so no single GPU submission can trip the driver timeout (TDR).
+        /// Chunks grow at most 2x per step and never beyond <see cref="MaxChunk"/>, which bounds the
+        /// overshoot when the work per element suddenly rises (e.g. from empty UV space into a dense island).
         /// </summary>
+        /// <param name="probe">Any buffer; one element is read back to wait for completion.</param>
         private async Task DispatchAdaptiveAsync(
-            int kernel, int count, ComputeBuffer output, Action<float> progress, CancellationToken token)
+            int kernel, int count, ComputeBuffer probe, int probeStride, Action<float> progress, CancellationToken token)
         {
             int chunk = 16384;
             var chunkTimer = new Stopwatch();
@@ -261,12 +297,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
                 chunkTimer.Restart();
                 _shader.Dispatch(kernel, CeilDiv(n, GroupSize), 1, 1);
-                WaitForGpu(output, 8, offset + n - 1);
+                WaitForGpu(probe, probeStride);
                 double ms = Math.Max(chunkTimer.Elapsed.TotalMilliseconds, 0.5);
 
                 offset += n;
                 double scale = Math.Min(2.0, TargetDispatchMs / ms);
-                chunk = (int)Math.Max(1024, Math.Min(MaxElementsPerDispatch, n * scale));
+                chunk = (int)Math.Max(1024, Math.Min(MaxChunk, n * scale));
 
                 if (yieldTimer.ElapsedMilliseconds >= YieldIntervalMs)
                 {
@@ -279,17 +315,17 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             progress(1f);
         }
 
-        /// <summary>Blocks until the GPU has finished all work queued before this call.</summary>
-        private static void WaitForGpu(ComputeBuffer buffer, int stride, int elementIndex)
+        /// <summary>Blocks until the GPU has finished all work queued before this call (reads back one element).</summary>
+        private static void WaitForGpu(ComputeBuffer buffer, int stride)
         {
             if (SystemInfo.supportsAsyncGPUReadback)
             {
-                AsyncGPUReadback.Request(buffer, stride, elementIndex * stride).WaitForCompletion();
+                AsyncGPUReadback.Request(buffer, stride, 0).WaitForCompletion();
             }
             else
             {
                 var probe = new byte[stride];
-                buffer.GetData(probe, 0, elementIndex * stride, stride);
+                buffer.GetData(probe, 0, 0, stride);
             }
         }
 
@@ -307,11 +343,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return buffer;
         }
 
-        /// <summary>Uploads an interleaved (start, count) table as one uint2 element per bucket.</summary>
-        private static ComputeBuffer CreateBucketBuffer(uint[] buckets)
+        /// <summary>Uploads an interleaved uint array (e.g. (start, count) buckets) as one uint2 element per pair.</summary>
+        private static ComputeBuffer CreatePairBuffer(uint[] pairs)
         {
-            var buffer = new ComputeBuffer(buckets.Length / 2, 8);
-            buffer.SetData(buckets);
+            var buffer = new ComputeBuffer(pairs.Length / 2, 8);
+            buffer.SetData(pairs);
             return buffer;
         }
 

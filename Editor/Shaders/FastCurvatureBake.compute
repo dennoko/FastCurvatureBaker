@@ -1,6 +1,8 @@
 #pragma kernel ClearGBuffer
 #pragma kernel RasterInterior
-#pragma kernel RasterConservative
+#pragma kernel RasterConservativeDistance
+#pragma kernel RasterConservativeOwner
+#pragma kernel ResolveGBuffer
 #pragma kernel EvaluateCurvature
 #pragma kernel Downsample
 #pragma kernel Blur
@@ -18,12 +20,19 @@ StructuredBuffer<float2> _UVs;
 StructuredBuffer<uint>   _Patches;          // smooth-patch id per vertex
 StructuredBuffer<uint>   _PatchComponents;  // connected-part id per patch
 StructuredBuffer<uint>   _Triangles;
+StructuredBuffer<uint2>  _RasterTiles;      // (triangle, tileX | tileY << 16), see UvLayout.cs
 
 // ---------------------------------------------------------------------------
 // G-buffer
+//   _GOwner:    triangle owning the texel (NoOwner = empty). Chosen with atomics
+//               so the result does not depend on thread scheduling.
+//   _GDist:     conservative pass scratch: smallest distance² (as uint) of a
+//               candidate triangle. Shares its buffer with _GNormal.
 //   _GPosition: xyz = world position, w = patch id + 1 (0 = empty texel)
-//   _GNormal:   octahedral-encoded shading normal (16 + 16 bit)
+//   _GNormal:   octahedral-encoded normal (16 + 16 bit)
 // ---------------------------------------------------------------------------
+RWStructuredBuffer<uint>   _GOwner;
+RWStructuredBuffer<uint>   _GDist;
 RWStructuredBuffer<float4> _GPosition;
 RWStructuredBuffer<uint>   _GNormal;
 
@@ -66,6 +75,7 @@ RWStructuredBuffer<float2> _Dst;
 // Parameters
 // ---------------------------------------------------------------------------
 uint   _Width;          // G-buffer / evaluation resolution
+uint   _TileSize;       // raster tile edge in pixels
 uint   _SrcWidth;       // post-process source resolution
 uint   _DstWidth;       // post-process destination resolution
 uint   _Offset;         // first element handled by this dispatch
@@ -88,7 +98,8 @@ uint   _SameComponentOnly;
 float  _EdgeWidth;
 float  _EdgeStrength;
 
-static const float ConservativeRadius = 0.75; // pixels
+static const uint  NoOwner            = 0xFFFFFFFF;
+static const float ConservativeRadius = 0.75; // pixels (UvLayout.ConservativeRadius)
 static const float RejectionBand      = 0.25; // normal-dot range over which rejection fades in
 static const float EdgeFacingMin      = 0.3;  // texel normal vs. edge face normal: fade-in range
 static const float EdgeFacingMax      = 0.6;
@@ -168,12 +179,33 @@ bool LoadTriangle(uint t, out uint i0, out uint i1, out uint i2, out float2 a, o
     return abs(Cross2(b - a, c - a)) > 1e-10;
 }
 
-void WriteTexel(uint index, uint i0, uint i1, uint i2, float3 w)
+// Loads the triangle of a raster tile and the pixel range of the tile within
+// `margin` pixels of the triangle's bounding box.
+bool LoadTile(uint item, float margin, out uint t, out float2 a, out float2 b, out float2 c,
+              out int2 lo, out int2 hi)
 {
-    float3 position = w.x * _Positions[i0] + w.y * _Positions[i1] + w.z * _Positions[i2];
-    float3 normal   = w.x * _Normals[i0]   + w.y * _Normals[i1]   + w.z * _Normals[i2];
-    _GPosition[index] = float4(position, (float)(_Patches[i0] + 1));
-    _GNormal[index]   = EncodeNormal(SafeNormalize(normal, _Normals[i0]));
+    uint2 tile = _RasterTiles[item];
+    t = tile.x;
+    uint i0, i1, i2;
+    bool valid = LoadTriangle(t, i0, i1, i2, a, b, c);
+
+    int2 tileLo = int2(tile.y & 0xFFFF, tile.y >> 16) * (int)_TileSize;
+    lo = max(max((int2)ceil(min(a, min(b, c)) - margin), tileLo), int2(0, 0));
+    hi = min(min((int2)floor(max(a, max(b, c)) + margin), tileLo + (int)_TileSize - 1), (int)_Width - 1);
+    return valid;
+}
+
+float3 Barycentric(float2 p, float2 a, float2 b, float2 c)
+{
+    float invArea = 1.0 / Cross2(b - a, c - a);
+    float w0 = Cross2(b - p, c - p) * invArea;
+    float w1 = Cross2(c - p, a - p) * invArea;
+    return float3(w0, w1, 1.0 - w0 - w1);
+}
+
+bool Inside(float3 w)
+{
+    return min(w.x, min(w.y, w.z)) >= -1e-5;
 }
 
 void ClosestOnSegment(float2 p, float2 s0, float2 s1, out float t, out float dist2)
@@ -185,6 +217,21 @@ void ClosestOnSegment(float2 p, float2 s0, float2 s1, out float t, out float dis
     dist2 = dot(d, d);
 }
 
+// Closest point on the triangle's border: barycentrics and squared pixel distance.
+// `precise` keeps both conservative passes bit-identical, which the owner pass relies on.
+float3 ClosestOnBorder(float2 p, float2 a, float2 b, float2 c, out precise float dist2)
+{
+    precise float tab, tbc, tca, dab, dbc, dca;
+    ClosestOnSegment(p, a, b, tab, dab);
+    ClosestOnSegment(p, b, c, tbc, dbc);
+    ClosestOnSegment(p, c, a, tca, dca);
+
+    if (dab <= dbc && dab <= dca) { dist2 = dab; return float3(1.0 - tab, tab, 0.0); }
+    if (dbc <= dca)               { dist2 = dbc; return float3(0.0, 1.0 - tbc, tbc); }
+    dist2 = dca;
+    return float3(tca, 0.0, 1.0 - tca);
+}
+
 // ---------------------------------------------------------------------------
 // ClearGBuffer — 1 thread per texel in [_Offset, _End)
 // ---------------------------------------------------------------------------
@@ -193,60 +240,57 @@ void ClearGBuffer(uint3 id : SV_DispatchThreadID)
 {
     uint index = id.x + _Offset;
     if (index >= _End) return;
-    _GPosition[index] = float4(0, 0, 0, 0);
-    _GNormal[index]   = 0;
+    _GOwner[index] = NoOwner;
+    _GDist[index]  = NoOwner;
 }
 
 // ---------------------------------------------------------------------------
-// RasterInterior — 1 thread per triangle in [_Offset, _End).
-// Writes every texel whose centre lies inside the triangle.
+// Rasterization — 1 thread per raster tile in [_Offset, _End), so the work per
+// thread is bounded by the tile size however large the triangle is.
+// Ownership is decided with atomics in three passes; attributes are written
+// once afterwards by ResolveGBuffer, so position, patch and normal of a texel
+// always come from the same triangle and repeated bakes are identical.
+//
+// 1) RasterInterior: texels whose centre lies inside a triangle. Overlapping
+//    UVs resolve to the lowest triangle index.
+// 2) RasterConservativeDistance: texels still empty record the smallest
+//    distance to any triangle within ConservativeRadius (fills island borders
+//    without bleeding into texels another island covers).
+// 3) RasterConservativeOwner: among the triangles at that distance, the lowest
+//    index wins.
 // ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
 void RasterInterior(uint3 id : SV_DispatchThreadID)
 {
-    uint t = id.x + _Offset;
-    if (t >= _End) return;
+    uint item = id.x + _Offset;
+    if (item >= _End) return;
 
-    uint i0, i1, i2;
+    uint t;
     float2 a, b, c;
-    if (!LoadTriangle(t, i0, i1, i2, a, b, c)) return;
-
-    float invArea = 1.0 / Cross2(b - a, c - a);
-    int2 lo = max((int2)ceil(min(a, min(b, c))), int2(0, 0));
-    int2 hi = min((int2)floor(max(a, max(b, c))), (int)_Width - 1);
+    int2 lo, hi;
+    if (!LoadTile(item, 0.0, t, a, b, c, lo, hi)) return;
 
     for (int y = lo.y; y <= hi.y; y++)
     {
         for (int x = lo.x; x <= hi.x; x++)
         {
-            float2 p = float2(x, y);
-            float w0 = Cross2(b - p, c - p) * invArea;
-            float w1 = Cross2(c - p, a - p) * invArea;
-            float w2 = 1.0 - w0 - w1;
-            if (min(w0, min(w1, w2)) < -1e-5) continue;
-            WriteTexel((uint)y * _Width + (uint)x, i0, i1, i2, float3(w0, w1, w2));
+            if (!Inside(Barycentric(float2(x, y), a, b, c))) continue;
+            uint previous;
+            InterlockedMin(_GOwner[(uint)y * _Width + (uint)x], t, previous);
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// RasterConservative — 1 thread per triangle in [_Offset, _End).
-// Fills texels left empty by RasterInterior that lie within ConservativeRadius
-// of the triangle, using the attributes of the closest point on the triangle.
-// Running after RasterInterior keeps neighbouring islands from bleeding over.
-// ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
-void RasterConservative(uint3 id : SV_DispatchThreadID)
+void RasterConservativeDistance(uint3 id : SV_DispatchThreadID)
 {
-    uint t = id.x + _Offset;
-    if (t >= _End) return;
+    uint item = id.x + _Offset;
+    if (item >= _End) return;
 
-    uint i0, i1, i2;
+    uint t;
     float2 a, b, c;
-    if (!LoadTriangle(t, i0, i1, i2, a, b, c)) return;
-
-    int2 lo = max((int2)ceil(min(a, min(b, c)) - ConservativeRadius), int2(0, 0));
-    int2 hi = min((int2)floor(max(a, max(b, c)) + ConservativeRadius), (int)_Width - 1);
+    int2 lo, hi;
+    if (!LoadTile(item, ConservativeRadius, t, a, b, c, lo, hi)) return;
     const float maxDist2 = ConservativeRadius * ConservativeRadius;
 
     for (int y = lo.y; y <= hi.y; y++)
@@ -254,24 +298,80 @@ void RasterConservative(uint3 id : SV_DispatchThreadID)
         for (int x = lo.x; x <= hi.x; x++)
         {
             uint index = (uint)y * _Width + (uint)x;
-            if (_GPosition[index].w > 0.5) continue;
+            if (_GOwner[index] != NoOwner) continue;
 
-            float2 p = float2(x, y);
-            float tab, tbc, tca, dab, dbc, dca;
-            ClosestOnSegment(p, a, b, tab, dab);
-            ClosestOnSegment(p, b, c, tbc, dbc);
-            ClosestOnSegment(p, c, a, tca, dca);
-
-            float3 w;
-            float best;
-            if (dab <= dbc && dab <= dca) { best = dab; w = float3(1.0 - tab, tab, 0.0); }
-            else if (dbc <= dca)          { best = dbc; w = float3(0.0, 1.0 - tbc, tbc); }
-            else                          { best = dca; w = float3(tca, 0.0, 1.0 - tca); }
-
-            if (best > maxDist2) continue;
-            WriteTexel(index, i0, i1, i2, w);
+            precise float dist2;
+            ClosestOnBorder(float2(x, y), a, b, c, dist2);
+            if (dist2 > maxDist2) continue;
+            uint previous;
+            InterlockedMin(_GDist[index], asuint(dist2), previous); // non-negative floats order like uints
         }
     }
+}
+
+[numthreads(64, 1, 1)]
+void RasterConservativeOwner(uint3 id : SV_DispatchThreadID)
+{
+    uint item = id.x + _Offset;
+    if (item >= _End) return;
+
+    uint t;
+    float2 a, b, c;
+    int2 lo, hi;
+    if (!LoadTile(item, ConservativeRadius, t, a, b, c, lo, hi)) return;
+
+    for (int y = lo.y; y <= hi.y; y++)
+    {
+        for (int x = lo.x; x <= hi.x; x++)
+        {
+            // Only texels the previous pass touched (interior texels keep NoOwner here).
+            uint index = (uint)y * _Width + (uint)x;
+            uint best = _GDist[index];
+            if (best == NoOwner) continue;
+
+            precise float dist2;
+            ClosestOnBorder(float2(x, y), a, b, c, dist2);
+            if (asuint(dist2) > best) continue;
+            uint previous;
+            InterlockedMin(_GOwner[index], t, previous);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ResolveGBuffer — 1 thread per texel in [_Offset, _End). Writes the owner's
+// attributes: interpolated inside the triangle, else at its closest border point.
+// ---------------------------------------------------------------------------
+[numthreads(64, 1, 1)]
+void ResolveGBuffer(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    uint t = _GOwner[index];
+    if (t == NoOwner)
+    {
+        _GPosition[index] = float4(0, 0, 0, 0);
+        _GNormal[index]   = 0;
+        return;
+    }
+
+    uint i0, i1, i2;
+    float2 a, b, c;
+    LoadTriangle(t, i0, i1, i2, a, b, c);
+
+    float2 p = float2(index % _Width, index / _Width);
+    float3 w = Barycentric(p, a, b, c);
+    if (!Inside(w))
+    {
+        float dist2;
+        w = ClosestOnBorder(p, a, b, c, dist2);
+    }
+
+    float3 position = w.x * _Positions[i0] + w.y * _Positions[i1] + w.z * _Positions[i2];
+    float3 normal   = w.x * _Normals[i0]   + w.y * _Normals[i1]   + w.z * _Normals[i2];
+    _GPosition[index] = float4(position, (float)(_Patches[i0] + 1));
+    _GNormal[index]   = EncodeNormal(SafeNormalize(normal, _Normals[i0]));
 }
 
 // ---------------------------------------------------------------------------
