@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
@@ -30,19 +31,32 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// <param name="faceNormals">Give samples the triangle's geometric normal instead of the interpolated shading normal.</param>
         public static SurfaceSample[] Generate(SurfaceMesh mesh, ref float spacing, bool faceNormals)
         {
-            int triangleCount = 0;
+            // Measured once, reused by every budget attempt and the placement pass (same iteration order).
+            var areas = new List<float>();
+            var longestEdges = new List<float>();
             foreach (int[] tris in mesh.SubMeshTriangles)
             {
-                if (tris != null) triangleCount += tris.Length / 3;
+                if (tris == null) continue;
+                for (int t = 0; t + 2 < tris.Length; t += 3)
+                {
+                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                    areas.Add(mesh.TriangleArea(i0, i1, i2));
+                    longestEdges.Add(Mathf.Sqrt(Mathf.Max(
+                        (mesh.Positions[i1] - mesh.Positions[i0]).sqrMagnitude,
+                        Mathf.Max((mesh.Positions[i2] - mesh.Positions[i1]).sqrMagnitude,
+                                  (mesh.Positions[i0] - mesh.Positions[i2]).sqrMagnitude))));
+                }
             }
+            int triangleCount = areas.Count;
 
-            // Every triangle keeps at least one sample, so the budget is spent on the remainder.
+            // Every triangle keeps at least one sample, so with more triangles than MaxSamples
+            // the budget is the triangle count and the sample count exceeds MaxSamples.
             int budget = Mathf.Max(MaxSamples, triangleCount);
-            long count = CountSamples(mesh, spacing);
+            long count = CountSamples(areas, longestEdges, spacing);
             for (int attempt = 0; attempt < 8 && count > budget; attempt++)
             {
                 spacing *= Mathf.Sqrt((float)count / budget) * 1.02f;
-                count = CountSamples(mesh, spacing);
+                count = CountSamples(areas, longestEdges, spacing);
             }
             if (count > budget)
             {
@@ -52,16 +66,16 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             }
 
             var samples = new SurfaceSample[count];
-            float invCellArea = spacing < float.MaxValue ? 1f / (spacing * spacing) : 0f;
             int written = 0;
+            int triangle = 0;
             foreach (int[] tris in mesh.SubMeshTriangles)
             {
                 if (tris == null) continue;
-                for (int t = 0; t + 2 < tris.Length; t += 3)
+                for (int t = 0; t + 2 < tris.Length; t += 3, triangle++)
                 {
                     int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    float area = mesh.TriangleArea(i0, i1, i2);
-                    int k = SamplesForTriangle(area, invCellArea);
+                    float area = areas[triangle];
+                    int k = SamplesForTriangle(area, longestEdges[triangle], spacing);
                     float weight = area / k;
                     uint patch = mesh.PatchIds[i0];
                     Vector3 faceNormal = faceNormals ? mesh.FaceNormal(i0, i1, i2) : Vector3.zero;
@@ -109,22 +123,25 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return samples;
         }
 
-        private static long CountSamples(SurfaceMesh mesh, float spacing)
+        private static long CountSamples(List<float> areas, List<float> longestEdges, float spacing)
         {
-            float invCellArea = 1f / (spacing * spacing);
             long count = 0;
-            foreach (int[] tris in mesh.SubMeshTriangles)
-            {
-                if (tris == null) continue;
-                for (int t = 0; t + 2 < tris.Length; t += 3)
-                    count += SamplesForTriangle(mesh.TriangleArea(tris[t], tris[t + 1], tris[t + 2]), invCellArea);
-            }
+            for (int i = 0; i < areas.Count; i++)
+                count += SamplesForTriangle(areas[i], longestEdges[i], spacing);
             return count;
         }
 
-        private static int SamplesForTriangle(float area, float invCellArea)
+        /// <summary>
+        /// One sample per spacing² of area, but at least one per spacing along the longest edge:
+        /// a sliver narrower than the spacing would otherwise get a single sample at its centroid
+        /// and leave its far ends unsupported. Only triangles thinner than about 2 spacings are affected.
+        /// </summary>
+        private static int SamplesForTriangle(float area, float longestEdge, float spacing)
         {
-            double k = System.Math.Round(area * (double)invCellArea);
+            double s = spacing;
+            double byArea = System.Math.Round(area / (s * s));
+            double byLength = System.Math.Floor(longestEdge / s);
+            double k = System.Math.Max(byArea, byLength);
             return k < 1 ? 1 : k > MaxSamples ? MaxSamples : (int)k;
         }
 
