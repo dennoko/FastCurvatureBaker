@@ -7,6 +7,7 @@
             <ui:Label name="version-label" text="" class="dennoko-version-label" />
             <ui:Button name="version-reload-button" text="↻" class="dennoko-version-reload-button" />
         </ui:VisualElement>
+        <ui:Button name="lang-button" text="EN" class="dennoko-button-secondary" style="width: 36px; height: 22px; padding: 0; font-size: 11px;" />
     </ui:VisualElement>
     <ui:VisualElement class="dennoko-separator" />
 
@@ -15,10 +16,10 @@
 
         <!-- ターゲット設定カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="TARGET OBJECTS" class="dennoko-section-title dennoko-card-header" />
+            <ui:Label name="targets-card-title" text="対象オブジェクト" class="dennoko-section-title dennoko-card-header" />
             <ui:VisualElement style="flex-direction: row; margin-bottom: 6px;">
-                <ui:Button name="add-selected-button" text="Add Selected" class="dennoko-button-secondary dennoko-col-grow" />
-                <ui:Button name="clear-targets-button" text="Clear" class="dennoko-button-secondary" style="flex-shrink: 0; width: 60px;" />
+                <ui:Button name="add-selected-button" text="選択中を追加" class="dennoko-button-secondary dennoko-col-grow" />
+                <ui:Button name="clear-targets-button" text="クリア" class="dennoko-button-secondary" style="flex-shrink: 0; width: 60px;" />
             </ui:VisualElement>
             <ui:VisualElement name="targets-container" />
             <ui:VisualElement name="drop-area" class="dennoko-drop-area">
@@ -28,49 +29,49 @@
 
         <!-- ベイク基本設定カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="BAKE SETTINGS" class="dennoko-section-title dennoko-card-header" />
-            <uie:EnumField label="Bake Mode" name="mode-field" />
-            <ui:DropdownField label="Resolution" name="resolution-field" />
-            <ui:DropdownField label="UV Channel" name="uv-channel-field" />
-            <uie:EnumField label="Quality" name="quality-field" />
-            <ui:Toggle label="Supersample 2x" name="supersample-toggle" />
+            <ui:Label name="bake-settings-card-title" text="ベイク基本設定" class="dennoko-section-title dennoko-card-header" />
+            <uie:EnumField label="ベイクモード" name="mode-field" />
+            <ui:DropdownField label="解像度" name="resolution-field" />
+            <ui:DropdownField label="UVチャンネル" name="uv-channel-field" />
+            <uie:EnumField label="品質" name="quality-field" />
+            <ui:Toggle label="スーパーサンプリング 2x" name="supersample-toggle" />
         </ui:VisualElement>
 
         <!-- ハードエッジ設定カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="HARD EDGES (エッジ検出)" class="dennoko-section-title dennoko-card-header" />
-            <ui:FloatField label="Edge Width (m)" name="edge-width-field" />
-            <ui:Slider label="Edge Strength" name="edge-strength-slider" low-value="0" high-value="4" show-input-field="true" />
+            <ui:Label name="hard-edges-card-title" text="ハードエッジ (エッジ検出)" class="dennoko-section-title dennoko-card-header" />
+            <ui:FloatField label="エッジ幅 (m)" name="edge-width-field" />
+            <ui:Slider label="エッジ強度" name="edge-strength-slider" low-value="0" high-value="4" show-input-field="true" />
         </ui:VisualElement>
 
         <!-- スムース曲面設定カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="SMOOTH SURFACES (曲面検出)" class="dennoko-section-title dennoko-card-header" />
-            <ui:FloatField label="Radius (m)" name="radius-field" />
-            <ui:Slider label="Strength" name="strength-slider" low-value="0" high-value="4" show-input-field="true" />
-            <uie:EnumField label="Source" name="source-field" />
+            <ui:Label name="smooth-surfaces-card-title" text="曲面設定 (曲面検出)" class="dennoko-section-title dennoko-card-header" />
+            <ui:FloatField label="曲面計測半径 (m)" name="radius-field" />
+            <ui:Slider label="曲面強度" name="strength-slider" low-value="0" high-value="4" show-input-field="true" />
+            <uie:EnumField label="計算ソース" name="source-field" />
         </ui:VisualElement>
 
         <!-- 詳細設定カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Foldout text="ADVANCED (詳細設定)" name="advanced-foldout" value="false" class="dennoko-section-title">
-                <ui:Toggle label="Same Part Only" name="same-component-toggle" />
-                <ui:Slider label="Normal Rejection" name="normal-rejection-slider" low-value="-1" high-value="0.75" show-input-field="true" />
-                <ui:SliderInt label="Blur Passes" name="blur-passes-slider" low-value="0" high-value="16" show-input-field="true" />
-                <ui:SliderInt label="Dilation (px)" name="dilation-slider" low-value="0" high-value="64" show-input-field="true" />
-                <ui:Toggle label="Overwrite Existing" name="overwrite-toggle" />
+            <ui:Foldout text="詳細設定" name="advanced-foldout" value="false" class="dennoko-section-title">
+                <ui:Toggle label="同一接続パーツのみ" name="same-component-toggle" />
+                <ui:Slider label="法線拒絶しきい値" name="normal-rejection-slider" low-value="-1" high-value="0.75" show-input-field="true" />
+                <ui:SliderInt label="ブラー反復回数" name="blur-passes-slider" low-value="0" high-value="16" show-input-field="true" />
+                <ui:SliderInt label="ピクセル拡張幅 (px)" name="dilation-slider" low-value="0" high-value="64" show-input-field="true" />
             </ui:Foldout>
         </ui:VisualElement>
 
         <!-- 保存先カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="OUTPUT (保存先)" class="dennoko-section-title dennoko-card-header" />
-            <ui:Label name="output-info-label" text="出力先: &lt;テクスチャフォルダ&gt;/Curvature/ (マテリアルにテクスチャが無い場合は Assets/Curvature/)" class="dennoko-text-tertiary" style="font-size: 11px; white-space: normal;" />
+            <ui:Label name="output-card-title" text="出力設定" class="dennoko-section-title dennoko-card-header" />
+            <ui:Toggle label="同名ファイルを上書き保存する" name="overwrite-toggle" />
+            <ui:Label name="output-info-label" text="出力先: &lt;ベーステクスチャのフォルダ&gt;/BakedCurvature/ (テクスチャがない場合は Assets/BakedCurvature/)" class="dennoko-text-tertiary" style="font-size: 11px; white-space: normal; margin-top: 4px;" />
         </ui:VisualElement>
 
         <!-- 項目解説カード -->
         <ui:VisualElement class="dennoko-card">
-            <ui:Label text="PROPERTY GUIDE (項目解説)" class="dennoko-section-title dennoko-card-header" />
+            <ui:Label name="guide-card-title" text="項目解説 (マウスオーバー)" class="dennoko-section-title dennoko-card-header" />
             <ui:VisualElement class="dennoko-guide-box">
                 <ui:Label name="guide-title" text="各項目にカーソルを合わせると説明が表示されます" class="dennoko-text-primary" style="font-size: 11px; -unity-font-style: bold; margin-bottom: 4px;" />
                 <ui:Label name="guide-desc" text="各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。" class="dennoko-text-secondary" style="font-size: 11px; white-space: normal; margin-bottom: 4px;" />
@@ -85,8 +86,8 @@
 
     <!-- フッター (アクションボタン) -->
     <ui:VisualElement class="dennoko-card dennoko-footer">
-        <ui:Button name="bake-button" text="Bake Curvature" class="dennoko-button-primary" />
-        <ui:Button name="reset-settings-button" text="Reset Settings" class="dennoko-button-secondary" style="margin-top: 4px;" />
+        <ui:Button name="bake-button" text="曲率テクスチャをベイク" class="dennoko-button-primary" />
+        <ui:Button name="reset-settings-button" text="設定を初期値にリセット" class="dennoko-button-secondary" style="margin-top: 4px;" />
     </ui:VisualElement>
 
     <!-- ステータスバー -->

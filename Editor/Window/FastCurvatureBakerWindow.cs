@@ -6,11 +6,13 @@ using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
+using static DennokoWorks.Tool.FastCurvatureBaker.FastCurvatureBakerLoc;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
     /// <summary>
     /// dennokoworks フローティングデザインシステムに準拠した Fast Curvature Baker の UI Toolkit ウィンドウ。
+    /// 日本語/英語のローカライズに対応。
     /// </summary>
     public sealed class FastCurvatureBakerWindow : EditorWindow
     {
@@ -31,30 +33,42 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private VisualElement _root;
         private Label _versionLabel;
         private Button _versionReloadButton;
-        private VisualElement _targetsContainer;
-        private VisualElement _dropArea;
+        private Button _langButton;
+
+        private Label _targetsCardTitle;
         private Button _addSelectedButton;
         private Button _clearTargetsButton;
+        private VisualElement _targetsContainer;
+        private VisualElement _dropArea;
+        private Label _dropHintLabel;
 
+        private Label _bakeSettingsCardTitle;
         private EnumField _modeField;
         private DropdownField _resolutionField;
         private DropdownField _uvChannelField;
         private EnumField _qualityField;
         private Toggle _supersampleToggle;
 
+        private Label _hardEdgesCardTitle;
         private FloatField _edgeWidthField;
         private Slider _edgeStrengthSlider;
 
+        private Label _smoothSurfacesCardTitle;
         private FloatField _radiusField;
         private Slider _strengthSlider;
         private EnumField _sourceField;
 
+        private Foldout _advancedFoldout;
         private Toggle _sameComponentToggle;
         private Slider _normalRejectionSlider;
         private SliderInt _blurPassesSlider;
         private SliderInt _dilationSlider;
-        private Toggle _overwriteToggle;
 
+        private Label _outputCardTitle;
+        private Toggle _overwriteToggle;
+        private Label _outputInfoLabel;
+
+        private Label _guideCardTitle;
         private Label _guideTitle;
         private Label _guideDesc;
         private Label _guideInc;
@@ -79,8 +93,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             window.minSize = new Vector2(380, 540);
         }
 
+        private void OnEnable()
+        {
+            FastCurvatureBakerLoc.OnLanguageChanged += ApplyLanguage;
+        }
+
         private void OnDisable()
         {
+            FastCurvatureBakerLoc.OnLanguageChanged -= ApplyLanguage;
             _cancellation?.Cancel();
         }
 
@@ -91,7 +111,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             // テーマ非依存のためのルートクラスを適用
             _root.AddToClassList("dennoko-root");
-            // USS ロード失敗時も背景が明るくならないよう Surface0 を C# 側でも保証
             _root.style.backgroundColor = (Color)new Color32(0x12, 0x12, 0x12, 0xFF);
             _root.style.flexGrow = 1;
 
@@ -164,12 +183,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             _statusLabel = root.Q<Label>("status-label");
 
+            // 言語切替ボタン
+            _langButton = root.Q<Button>("lang-button");
+            if (_langButton != null)
+            {
+                _langButton.clicked += FastCurvatureBakerLoc.ToggleLanguage;
+            }
+
             // バージョン表示関連
             _versionLabel = root.Q<Label>("version-label");
             _versionReloadButton = root.Q<Button>("version-reload-button");
             if (_versionReloadButton != null)
             {
-                _versionReloadButton.tooltip = "最新バージョンの確認を再試行します";
                 _versionReloadButton.clicked += () =>
                 {
                     FastCurvatureBakerVersion.ForceRecheck();
@@ -178,8 +203,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             }
 
             // ターゲット管理関連
+            _targetsCardTitle = root.Q<Label>("targets-card-title");
             _targetsContainer = root.Q<VisualElement>("targets-container");
             _dropArea = root.Q<VisualElement>("drop-area");
+            _dropHintLabel = root.Q<Label>("drop-hint-label");
             _addSelectedButton = root.Q<Button>("add-selected-button");
             _clearTargetsButton = root.Q<Button>("clear-targets-button");
 
@@ -200,34 +227,34 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             RefreshTargetsList();
 
             // 設定フィールド
+            _bakeSettingsCardTitle = root.Q<Label>("bake-settings-card-title");
             _modeField = root.Q<EnumField>("mode-field");
             _resolutionField = root.Q<DropdownField>("resolution-field");
             _uvChannelField = root.Q<DropdownField>("uv-channel-field");
             _qualityField = root.Q<EnumField>("quality-field");
             _supersampleToggle = root.Q<Toggle>("supersample-toggle");
 
+            _hardEdgesCardTitle = root.Q<Label>("hard-edges-card-title");
             _edgeWidthField = root.Q<FloatField>("edge-width-field");
             _edgeStrengthSlider = root.Q<Slider>("edge-strength-slider");
 
+            _smoothSurfacesCardTitle = root.Q<Label>("smooth-surfaces-card-title");
             _radiusField = root.Q<FloatField>("radius-field");
             _strengthSlider = root.Q<Slider>("strength-slider");
             _sourceField = root.Q<EnumField>("source-field");
 
+            _advancedFoldout = root.Q<Foldout>("advanced-foldout");
             _sameComponentToggle = root.Q<Toggle>("same-component-toggle");
             _normalRejectionSlider = root.Q<Slider>("normal-rejection-slider");
             _blurPassesSlider = root.Q<SliderInt>("blur-passes-slider");
             _dilationSlider = root.Q<SliderInt>("dilation-slider");
-            _overwriteToggle = root.Q<Toggle>("overwrite-toggle");
 
-            // 出力情報
-            var outputLabel = root.Q<Label>("output-info-label");
-            if (outputLabel != null)
-            {
-                outputLabel.text = $"出力先: <ベーステクスチャのフォルダ>/{CurvatureTextureExporter.OutputFolderName}/ " +
-                                   $"(テクスチャがない場合は {CurvatureTextureExporter.FallbackFolder}/)";
-            }
+            _outputCardTitle = root.Q<Label>("output-card-title");
+            _overwriteToggle = root.Q<Toggle>("overwrite-toggle");
+            _outputInfoLabel = root.Q<Label>("output-info-label");
 
             // ガイドパネル
+            _guideCardTitle = root.Q<Label>("guide-card-title");
             _guideTitle = root.Q<Label>("guide-title");
             _guideDesc = root.Q<Label>("guide-desc");
             _guideInc = root.Q<Label>("guide-inc");
@@ -247,14 +274,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     Undo.RecordObject(this, "Reset Curvature Bake Settings");
                     _settings = new CurvatureBakeSettings();
                     SyncSettingsToUI();
-                    SetStatus("設定を初期値にリセットしました。", StatusType.Info);
+                    SetStatus(Tr("設定を初期値にリセットしました。", "Settings reset to default."), StatusType.Info);
                 };
             }
 
             SetupDropdownChoices();
             SyncSettingsToUI();
             BindSettingsEvents();
-            SetupPropertyExplanations();
+            ApplyLanguage();
         }
 
         private void SetupDropdownChoices()
@@ -425,6 +452,71 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             });
         }
 
+        // ─── 言語適用 (ApplyLanguage) ───────────────────────────────────────
+
+        private void ApplyLanguage()
+        {
+            if (_langButton != null)
+            {
+                _langButton.text = IsJapanese ? "EN" : "JA";
+                _langButton.tooltip = Tr("英語表示に切り替えます", "Switch to Japanese");
+            }
+
+            if (_versionReloadButton != null)
+            {
+                _versionReloadButton.tooltip = Tr("アップデートを再確認", "Recheck for updates");
+            }
+
+            // セクションタイトル
+            if (_targetsCardTitle != null) _targetsCardTitle.text = Tr("対象オブジェクト", "TARGET OBJECTS");
+            if (_addSelectedButton != null) _addSelectedButton.text = Tr("選択中を追加", "Add Selected");
+            if (_clearTargetsButton != null) _clearTargetsButton.text = Tr("クリア", "Clear");
+            if (_dropHintLabel != null) _dropHintLabel.text = Tr("GameObject をドラッグ＆ドロップして追加", "Drag & Drop GameObjects here");
+
+            if (_bakeSettingsCardTitle != null) _bakeSettingsCardTitle.text = Tr("ベイク基本設定", "BAKE SETTINGS");
+            if (_modeField != null) _modeField.label = Tr("ベイクモード", "Bake Mode");
+            if (_resolutionField != null) _resolutionField.label = Tr("解像度", "Resolution");
+            if (_uvChannelField != null) _uvChannelField.label = Tr("UVチャンネル", "UV Channel");
+            if (_qualityField != null) _qualityField.label = Tr("品質", "Quality");
+            if (_supersampleToggle != null) _supersampleToggle.label = Tr("スーパーサンプリング 2x", "Supersample 2x");
+
+            if (_hardEdgesCardTitle != null) _hardEdgesCardTitle.text = Tr("ハードエッジ (エッジ検出)", "HARD EDGES (Edge Detection)");
+            if (_edgeWidthField != null) _edgeWidthField.label = Tr("エッジ幅 (m)", "Edge Width (m)");
+            if (_edgeStrengthSlider != null) _edgeStrengthSlider.label = Tr("エッジ強度", "Edge Strength");
+
+            if (_smoothSurfacesCardTitle != null) _smoothSurfacesCardTitle.text = Tr("曲面設定 (曲面検出)", "SMOOTH SURFACES (Curvature)");
+            if (_radiusField != null) _radiusField.label = Tr("曲面計測半径 (m)", "Radius (m)");
+            if (_strengthSlider != null) _strengthSlider.label = Tr("曲面強度", "Strength");
+            if (_sourceField != null) _sourceField.label = Tr("計算ソース", "Source");
+
+            if (_advancedFoldout != null) _advancedFoldout.text = Tr("詳細設定", "ADVANCED");
+            if (_sameComponentToggle != null) _sameComponentToggle.label = Tr("同一接続パーツのみ", "Same Part Only");
+            if (_normalRejectionSlider != null) _normalRejectionSlider.label = Tr("法線拒絶しきい値", "Normal Rejection");
+            if (_blurPassesSlider != null) _blurPassesSlider.label = Tr("ブラー反復回数", "Blur Passes");
+            if (_dilationSlider != null) _dilationSlider.label = Tr("ピクセル拡張幅 (px)", "Dilation (px)");
+
+            if (_outputCardTitle != null) _outputCardTitle.text = Tr("出力設定", "OUTPUT SETTINGS");
+            if (_overwriteToggle != null) _overwriteToggle.label = Tr("同名ファイルを上書き保存する", "Overwrite Existing Files");
+            if (_outputInfoLabel != null)
+            {
+                _outputInfoLabel.text = Tr(
+                    $"出力先: <ベーステクスチャのフォルダ>/{CurvatureTextureExporter.OutputFolderName}/ (テクスチャがない場合は {CurvatureTextureExporter.FallbackFolder}/)",
+                    $"Output: <base texture folder>/{CurvatureTextureExporter.OutputFolderName}/ (or {CurvatureTextureExporter.FallbackFolder}/ if no texture)");
+            }
+
+            if (_guideCardTitle != null) _guideCardTitle.text = Tr("項目解説 (マウスオーバー)", "PROPERTY GUIDE");
+            ResetGuideBox();
+
+            if (_bakeButton != null)
+                _bakeButton.text = IsBaking ? Tr("ベイク中...", "Baking...") : Tr("曲率テクスチャをベイク", "Bake Curvature");
+            if (_resetSettingsButton != null)
+                _resetSettingsButton.text = Tr("設定を初期値にリセット", "Reset Settings");
+
+            SetupPropertyExplanations();
+            ApplyVersionLabel();
+            RefreshTargetsList();
+        }
+
         // ─── 項目解説 (Hover / Guide) ────────────────────────────────────────
 
         private struct PropertyExplanation
@@ -439,122 +531,208 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             AttachExplanation(_modeField, new PropertyExplanation
             {
-                Name = "Bake Mode (ベイクモード)",
-                Description = "出力する曲率テクスチャの種類を指定します。\n・Default: 符号付き曲率 (平坦=0.5、凸=白、凹=黒)\n・Convex: 凸部のみ抽出 (エッジの摩耗・ハイライト用)\n・Concave: 凹部のみ抽出 (溝の汚れ・影マスク用)",
-                IncreaseImpact = "【切替効果】用途に応じた白黒マスク（凸/凹）または全曲率マップを切り替えます。",
+                Name = Tr("Bake Mode (ベイクモード)", "Bake Mode"),
+                Description = Tr(
+                    "出力する曲率テクスチャの種類を指定します。\n・Default: 符号付き曲率 (平坦=0.5、凸=白、凹=黒)\n・Convex: 凸部のみ抽出 (エッジの摩耗・ハイライト用)\n・Concave: 凹部のみ抽出 (溝の汚れ・影マスク用)",
+                    "Selects what the baked curvature texture represents:\n• Default: Signed curvature (0.5 = flat, brighter = convex, darker = concave)\n• Convex: White on convex edges (edge wear / scratch mask)\n• Concave: White in creases (dirt / grime mask)"),
+                IncreaseImpact = Tr(
+                    "【切替効果】用途に応じた白黒マスク（凸/凹）または全曲率マップを切り替えます。",
+                    "[Mode change] Selects full signed curvature map or wear/dirt masks."),
                 DecreaseImpact = ""
             });
 
             AttachExplanation(_resolutionField, new PropertyExplanation
             {
-                Name = "Resolution (テクスチャ解像度)",
-                Description = "出力テクスチャのピクセル解像度（256〜4096）を指定します。",
-                IncreaseImpact = "【値を増やす (▲)】曲率エッジの解像度やディテールが鮮明になりますが、ベイク時間とメモリ消費量が増加します。",
-                DecreaseImpact = "【値を減らす (▼)】ベイクが高速化しファイル容量が軽くなりますが、エッジが粗くなりジャギーが出やすくなります。"
+                Name = Tr("Resolution (テクスチャ解像度)", "Resolution"),
+                Description = Tr(
+                    "出力テクスチャのピクセル解像度（256〜4096）を指定します。",
+                    "Output texture resolution in pixels (256 to 4096)."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】曲率エッジの解像度やディテールが鮮明になりますが、ベイク時間とメモリ消費量が増加します。",
+                    "[Increase ▲] Sharper details and edge definition, but increases bake time and memory usage."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】ベイクが高速化しファイル容量が軽くなりますが、エッジが粗くなりジャギーが出やすくなります。",
+                    "[Decrease ▼] Faster bake time and smaller file size, but lowers edge sharpness and may introduce pixelation.")
             });
 
             AttachExplanation(_uvChannelField, new PropertyExplanation
             {
-                Name = "UV Channel (使用UVチャンネル)",
-                Description = "テクスチャのベイクに使用するメッシュのUVチャンネル (UV0〜UV7) を選択します。",
-                IncreaseImpact = "【インデックス変更】通常はベーステクスチャ展開用のUV0を使用します。セカンドUV等にベイクしたい場合に変更します。",
+                Name = Tr("UV Channel (使用UVチャンネル)", "UV Channel"),
+                Description = Tr(
+                    "テクスチャのベイクに使用するメッシュのUVチャンネル (UV0〜UV7) を選択します。",
+                    "UV channel used for baking (UV0 to UV7)."),
+                IncreaseImpact = Tr(
+                    "【インデックス変更】通常はベーステクスチャ展開用のUV0を使用します。セカンドUV等にベイクしたい場合に変更します。",
+                    "[Channel change] UV0 is typically used for base textures. Switch only when baking for a secondary UV set."),
                 DecreaseImpact = ""
             });
 
             AttachExplanation(_qualityField, new PropertyExplanation
             {
-                Name = "Quality (サンプリング品質)",
-                Description = "半径あたりに配置するサンプリング点数（Draft: 4点, Standard: 6点, High: 8点, Ultra: 12点）を指定します。",
-                IncreaseImpact = "【品質を上げる (▲)】サンプリング密度が上がりノイズが低減され滑らかになりますが、ベイク計算時間が増加します。",
-                DecreaseImpact = "【品質を下げる (▼)】計算時間を短縮できます。ベイク結果の当たりをつけるプレビュー用途に適しています。"
+                Name = Tr("Quality (サンプリング品質)", "Quality"),
+                Description = Tr(
+                    "半径あたりに配置するサンプリング点数（Draft: 4点, Standard: 6点, High: 8点, Ultra: 12点）を指定します。",
+                    "Number of sampling points per radius (Draft: 4, Standard: 6, High: 8, Ultra: 12)."),
+                IncreaseImpact = Tr(
+                    "【品質を上げる (▲)】サンプリング密度が上がりノイズが低減され滑らかになりますが、ベイク計算時間が増加します。",
+                    "[Higher ▲] Reduces noise and improves curvature estimation accuracy, but increases bake time."),
+                DecreaseImpact = Tr(
+                    "【品質を下げる (▼)】計算時間を短縮できます。ベイク結果の当たりをつけるプレビュー用途に適しています。",
+                    "[Lower ▼] Faster processing, ideal for quick preview and iterative tuning.")
             });
 
             AttachExplanation(_supersampleToggle, new PropertyExplanation
             {
-                Name = "Supersample 2x (スーパーサンプリング)",
-                Description = "内部で2倍の解像度で計算を行い、平均化（ダウンサンプリング）して出力します（解像度4096時は自動無効）。",
-                IncreaseImpact = "【有効 (ON)】UV境界や細かなエッジのエイリアシング（ギザギザ）を劇的に低減し高品質にします（計算時間は約4倍）。",
-                DecreaseImpact = "【無効 (OFF)】計算時間を短縮して高速にベイクします。"
+                Name = Tr("Supersample 2x (スーパーサンプリング)", "Supersample 2x"),
+                Description = Tr(
+                    "内部で2倍の解像度で計算を行い、平均化（ダウンサンプリング）して出力します（解像度4096時は自動無効）。",
+                    "Evaluates at 2x resolution and downsamples (skipped when resolution is 4096)."),
+                IncreaseImpact = Tr(
+                    "【有効 (ON)】UV境界や細かなエッジのエイリアシング（ギザギザ）を劇的に低減し高品質にします（計算時間は約4倍）。",
+                    "[Enabled ON] Greatly reduces aliasing and jagged edges on thin features (takes ~4x bake time)."),
+                DecreaseImpact = Tr(
+                    "【無効 (OFF)】計算時間を短縮して高速にベイクします。",
+                    "[Disabled OFF] Significantly shortens baking time.")
             });
 
             AttachExplanation(_edgeWidthField, new PropertyExplanation
             {
-                Name = "Edge Width [m] (ハードエッジ幅)",
-                Description = "法線が分割されているハードエッジ（ポリゴンの明確な折り目）から、曲率として検出するワールド空間の幅（メートル単位）です。",
-                IncreaseImpact = "【値を増やす (▲)】ハードエッジ周囲の白/黒の帯が太く広がり、角の摩耗表現などが広範囲に目立つようになります。",
-                DecreaseImpact = "【値を減らす (▼)】極めて細くシャープなエッジラインになり、金属の硬質なコーナー角などに適します。"
+                Name = Tr("Edge Width [m] (ハードエッジ幅)", "Edge Width (m)"),
+                Description = Tr(
+                    "法線が分割されているハードエッジ（ポリゴンの明確な折り目）から、曲率として検出するワールド空間の幅（メートル単位）です。",
+                    "World-space distance (meters) from a hard edge (split normals) treated as convex/concave."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】ハードエッジ周囲の白/黒の帯が太く広がり、角の摩耗表現などが広範囲に目立つようになります。",
+                    "[Increase ▲] Produces broader wear/crease bands along hard edges."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】極めて細くシャープなエッジラインになり、金属の硬質なコーナー角などに適します。",
+                    "[Decrease ▼] Produces very thin, sharp lines suitable for crisp metal corners.")
             });
 
             AttachExplanation(_edgeStrengthSlider, new PropertyExplanation
             {
-                Name = "Edge Strength (ハードエッジ強度)",
-                Description = "ハードエッジにおける曲率の乗数（倍率）です。直角（90度）の折り目は値1.0で最大輝度（白または黒）に達します。",
-                IncreaseImpact = "【値を増やす (▲)】緩やかな角度のエッジでも強く白黒が際立つようになり、コントラストが強調されます。",
-                DecreaseImpact = "【値を減らす (▼)】ハードエッジの影響が弱まり、0.0にするとハードエッジ検出を無効化できます。"
+                Name = Tr("Edge Strength (ハードエッジ強度)", "Edge Strength"),
+                Description = Tr(
+                    "ハードエッジにおける曲率の乗数（倍率）です。直角（90度）の折り目は値1.0で最大輝度（白または黒）に達します。",
+                    "Intensity multiplier for hard edges. A 90-degree fold reaches full intensity at 1.0."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】緩やかな角度のエッジでも強く白黒が際立つようになり、コントラストが強調されます。",
+                    "[Increase ▲] Enhances contrast so even shallow creases become prominent."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】ハードエッジの影響が弱まり、0.0にするとハードエッジ検出を無効化できます。",
+                    "[Decrease ▼] Reduces hard edge intensity; setting to 0 disables hard edge detection.")
             });
 
             AttachExplanation(_radiusField, new PropertyExplanation
             {
-                Name = "Radius [m] (曲面計測半径)",
-                Description = "スムース面（なだらかな曲面）の曲率を計算するために周囲のサーフェスを探索する球の半径（メートル単位）です。",
-                IncreaseImpact = "【値を増やす (▲)】より広範囲な大きなうねりや緩やかな曲面を捉え、滑らかな大域グラデーションになります。",
-                DecreaseImpact = "【値を減らす (▼)】微細な凹凸・小さなモールドに鋭く反応するようになり、大まかな曲面には反応しなくなります。"
+                Name = Tr("Radius [m] (曲面計測半径)", "Radius (m)"),
+                Description = Tr(
+                    "スムース面（なだらかな曲面）の曲率を計算するために周囲のサーフェスを探索する球の半径（メートル単位）です。",
+                    "World-space sampling sphere radius used to estimate the curvature of smooth surfaces."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】より広範囲な大きなうねりや緩やかな曲面を捉え、滑らかな大域グラデーションになります。",
+                    "[Increase ▲] Captures broad, macroscopic surface curvature with smooth gradients."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】微細な凹凸・小さなモールドに鋭く反応するようになり、大まかな曲面には反応しなくなります。",
+                    "[Decrease ▼] Focuses on fine, localized relief details and ignores broad curvature.")
             });
 
             AttachExplanation(_strengthSlider, new PropertyExplanation
             {
-                Name = "Strength (曲面強度)",
-                Description = "スムース面の曲率の出力乗数（倍率）です。Radiusと等しい半径を持つ球面の曲率は値1.0で最大輝度に達します。",
-                IncreaseImpact = "【値を増やす (▲)】緩やかな曲面でも白黒のメリハリ・コントラストが強調されます。",
-                DecreaseImpact = "【値を減らす (▼)】曲率の変化がマイルドで淡く柔らかいグラデーションになります。"
+                Name = Tr("Strength (曲面強度)", "Strength"),
+                Description = Tr(
+                    "スムース面の曲率の出力乗数（倍率）です。Radiusと等しい半径を持つ球面の曲率は値1.0で最大輝度に達します。",
+                    "Output intensity multiplier for smooth surfaces. A sphere with radius equal to Radius reaches full intensity at 1.0."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】緩やかな曲面でも白黒のメリハリ・コントラストが強調されます。",
+                    "[Increase ▲] Boosts contrast and punchiness on gentle curved surfaces."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】曲率の変化がマイルドで淡く柔らかいグラデーションになります。",
+                    "[Decrease ▼] Produces milder, subtle gradients.")
             });
 
             AttachExplanation(_sourceField, new PropertyExplanation
             {
-                Name = "Source (曲率計算ソース)",
-                Description = "スムース面の曲率計算に使用する法線シグナルを選択します。\n・ShadingNormals: 頂点法線（滑らかな陰影）に追従\n・Geometry: 実際のポリゴン面法線（面の折り目を直接計測）",
-                IncreaseImpact = "【ShadingNormals】ローポリでもシェーディング通りの滑らかな曲率が得られます。",
-                DecreaseImpact = "【Geometry】ハイポリやハードサーフェスで各ポリゴンの微小な角度変化をすべて拾いたい場合に使用します。"
+                Name = Tr("Source (曲率計算ソース)", "Source"),
+                Description = Tr(
+                    "スムース面の曲率計算に使用する法線シグナルを選択します。\n・ShadingNormals: 頂点法線（滑らかな陰影）に追従\n・Geometry: 実際のポリゴン面法線（面の折り目を直接計測）",
+                    "Surface signal used to compute curvature:\n• ShadingNormals: Smooth, follows shading of low-poly meshes\n• Geometry: Uses face normals, detecting every polygon crease"),
+                IncreaseImpact = Tr(
+                    "【ShadingNormals】ローポリでもシェーディング通りの滑らかな曲率が得られます。",
+                    "[ShadingNormals] Produces smooth, artifact-free gradients on low-poly meshes."),
+                DecreaseImpact = Tr(
+                    "【Geometry】ハイポリやハードサーフェスで各ポリゴンの微小な角度変化をすべて拾いたい場合に使用します。",
+                    "[Geometry] Picks up every polygon facet; ideal for dense cad/hard-surface models.")
             });
 
             AttachExplanation(_sameComponentToggle, new PropertyExplanation
             {
-                Name = "Same Part Only (同一接続パーツのみ)",
-                Description = "テクセルと同一の接続されたメッシュパーツ（連結成分）のみから曲率サンプルを取得します。",
-                IncreaseImpact = "【有効 (ON)】衣服と素肌のように、近接しているが別パーツである部分同士の不要な曲率干渉・影の映り込みを防ぎます。",
-                DecreaseImpact = "【無効 (OFF)】別パーツ同士の隙間や重なり合いも一体の幾何形状として凹凸（陰影）を検出します。"
+                Name = Tr("Same Part Only (同一接続パーツのみ)", "Same Part Only"),
+                Description = Tr(
+                    "テクセルと同一の接続されたメッシュパーツ（連結成分）のみから曲率サンプルを取得します。",
+                    "Only use surface samples from the same connected mesh island as the texel."),
+                IncreaseImpact = Tr(
+                    "【有効 (ON)】衣服と素肌のように、近接しているが別パーツである部分同士の不要な曲率干渉・影の映り込みを防ぎます。",
+                    "[Enabled ON] Prevents disconnected overlapping parts (e.g. clothing over skin) from projecting false curvature."),
+                DecreaseImpact = Tr(
+                    "【無効 (OFF)】別パーツ同士の隙間や重なり合いも一体の幾何形状として凹凸（陰影）を検出します。",
+                    "[Disabled OFF] Treats nearby disconnected parts as continuous geometry to detect contact crevices.")
             });
 
             AttachExplanation(_normalRejectionSlider, new PropertyExplanation
             {
-                Name = "Normal Rejection (法線拒絶しきい値)",
-                Description = "テクセル法線と反対方向（裏面など）を向いている近接面を除外する内積のしきい値です（そこから+0.25の間で重みが徐々に復帰）。",
-                IncreaseImpact = "【値を増やす (▲)】薄い板の裏面や急角度の背面が厳格に除外され、裏抜けや不要な干渉を防ぎます（上げすぎると溝の検出が弱まります）。",
-                DecreaseImpact = "【値を減らす (▼)】より広い角度の面がサンプリング対象に含まれ、急峻な溝の谷底でも確実に曲率を検出できます。"
+                Name = Tr("Normal Rejection (法線拒絶しきい値)", "Normal Rejection"),
+                Description = Tr(
+                    "テクセル法線と反対方向（裏面など）を向いている近接面を除外する内積のしきい値です（そこから+0.25の間で重みが徐々に復帰）。",
+                    "Dot product threshold below which opposite-facing surfaces are rejected (fades back in over the next 0.25)."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】薄い板の裏面や急角度の背面が厳格に除外され、裏抜けや不要な干渉を防ぎます（上げすぎると溝の検出が弱まります）。",
+                    "[Increase ▲] Strictly excludes back-facing surfaces, avoiding leak-through on thin sheets."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】より広い角度の面がサンプリング対象に含まれ、急峻な溝の谷底でも確実に曲率を検出できます。",
+                    "[Decrease ▼] Includes wider angles in sampling, ensuring deep V-shaped crevices are detected.")
             });
 
             AttachExplanation(_blurPassesSlider, new PropertyExplanation
             {
-                Name = "Blur Passes (ブラー反復回数)",
-                Description = "ベイク完了後に適用する3x3ガウシアンブラーの反復回数（0〜16回）です。",
-                IncreaseImpact = "【値を増やす (▲)】メッシュの微細なノイズが平滑化されて滑らかになりますが、エッジの鋭さが甘くなります。",
-                DecreaseImpact = "【値を減らす (▼)】元のシャープなベイク結果がそのまま保持されます（0でブラー無効）。"
+                Name = Tr("Blur Passes (ブラー反復回数)", "Blur Passes"),
+                Description = Tr(
+                    "ベイク完了後に適用する3x3ガウシアンブラーの反復回数（0〜16回）です。",
+                    "Number of 3x3 gaussian blur passes applied after evaluation (0 to 16)."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】メッシュの微細なノイズが平滑化されて滑らかになりますが、エッジの鋭さが甘くなります。",
+                    "[Increase ▲] Smooths out noise and micro-facets at the cost of softening sharp edges."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】元のシャープなベイク結果がそのまま保持されます（0でブラー無効）。",
+                    "[Decrease ▼] Preserves raw, crisp bake sharpness (0 disables blur).")
             });
 
             AttachExplanation(_dilationSlider, new PropertyExplanation
             {
-                Name = "Dilation [px] (ピクセル拡張幅)",
-                Description = "UVアイランドの境界線からテクスチャ結果を外側へ何ピクセル引き伸ばすか（0〜64px）を指定します。",
-                IncreaseImpact = "【値を増やす (▲)】ミップマップ生成時や遠景レンダリング時にUV境界のフチに生じる黒い継ぎ目（シーム）を防止できます。",
-                DecreaseImpact = "【値を減らす (▼)】アイランド外への余白が小さくなります。UVアイランド間の隙間が狭く隣の島と接触しやすい場合に小さくします。"
+                Name = Tr("Dilation [px] (ピクセル拡張幅)", "Dilation (px)"),
+                Description = Tr(
+                    "UVアイランドの境界線からテクスチャ結果を外側へ何ピクセル引き伸ばすか（0〜64px）を指定します。",
+                    "Pixels to extend valid texture colors outward from UV island boundaries (0 to 64px)."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】ミップマップ生成時や遠景レンダリング時にUV境界のフチに生じる黒い継ぎ目（シーム）を防止できます。",
+                    "[Increase ▲] Prevents dark seams/borders caused by texture mipmapping and texture filtering."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】アイランド外への余白が小さくなります。UVアイランド間の隙間が狭く隣の島と接触しやすい場合に小さくします。",
+                    "[Decrease ▼] Reduces padding between tightly packed UV islands to avoid bleeding.")
             });
 
             AttachExplanation(_overwriteToggle, new PropertyExplanation
             {
-                Name = "Overwrite Existing (既存ファイル上書き)",
-                Description = "出力先フォルダに同名のテクスチャファイルが既に存在する場合の保存動作です。",
-                IncreaseImpact = "【有効 (ON)】既存のファイルを上書き更新します。再ベイクによる差し替えに便利です。",
-                DecreaseImpact = "【無効 (OFF)】既存ファイルを保護し、ファイル名末尾に _1, _2 のように連番を付与して別名保存します。"
+                Name = Tr("Overwrite Existing (同名ファイルを上書き)", "Overwrite Existing"),
+                Description = Tr(
+                    "出力先フォルダに同名のテクスチャファイルが既に存在する場合の保存動作です。",
+                    "Determines saving behavior when an identical file name exists in the output folder."),
+                IncreaseImpact = Tr(
+                    "【有効 (ON)】既存のファイルを上書き更新します。再ベイクによる差し替えに便利です。",
+                    "[Enabled ON] Overwrites existing texture files directly."),
+                DecreaseImpact = Tr(
+                    "【無効 (OFF)】既存ファイルを保護し、ファイル名末尾にスペース＋連番（例: Name 1.png）を付与して別名保存します。",
+                    "[Disabled OFF] Protects existing files and saves with space + number suffix (e.g. Name 1.png).")
             });
         }
 
@@ -586,8 +764,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         private void ResetGuideBox()
         {
-            if (_guideTitle != null) _guideTitle.text = "各項目にカーソルを合わせると説明が表示されます";
-            if (_guideDesc != null) _guideDesc.text = "各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。";
+            if (_guideTitle != null) _guideTitle.text = Tr("各項目にカーソルを合わせると説明が表示されます", "Hover over any property to view details");
+            if (_guideDesc != null) _guideDesc.text = Tr("各設定項目の意味や、値を増減したときの影響についての解説がここに表示されます。", "Explanations and impacts of increasing/decreasing values will be displayed here.");
             if (_guideInc != null) _guideInc.text = "";
             if (_guideDec != null) _guideDec.text = "";
         }
@@ -654,7 +832,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (added)
             {
                 RefreshTargetsList();
-                SetStatus($"{_targets.Count} 個のターゲットが設定されています。", StatusType.Info);
+                SetStatus(Tr($"{_targets.Count} 個のターゲットが設定されています。", $"{_targets.Count} target(s) configured."), StatusType.Info);
             }
         }
 
@@ -693,7 +871,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     text = "×"
                 };
                 removeBtn.AddToClassList("dennoko-target-row-remove");
-                removeBtn.tooltip = "このターゲットを一覧から除外します";
+                removeBtn.tooltip = Tr("このターゲットを一覧から除外", "Remove this target from list");
 
                 row.Add(objField);
                 row.Add(removeBtn);
@@ -748,15 +926,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             switch (r.State)
             {
                 case DennokoVersionChecker.State.UpdateAvailable:
-                    text = $"{baseText}  更新あり {r.LatestVersion}";
+                    text = $"{baseText}  " + Tr($"更新あり {r.LatestVersion}", $"Update available {r.LatestVersion}");
                     update = true;
                     break;
                 case DennokoVersionChecker.State.Error:
-                    text = $"{baseText}  最新版を取得できません";
+                    text = $"{baseText}  " + Tr("最新版を取得できません", "Cannot fetch latest");
                     error = true;
                     break;
                 case DennokoVersionChecker.State.Checking:
-                    text = $"{baseText}  確認中...";
+                    text = $"{baseText}  " + Tr("確認中...", "Checking...");
                     break;
                 default:
                     text = baseText;
@@ -793,16 +971,16 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             var targets = _targets.Where(t => t != null).Distinct().ToList();
             if (targets.Count == 0)
             {
-                SetStatus("ターゲットが設定されていません。", StatusType.Error);
-                EditorUtility.DisplayDialog(Title, "ターゲットの GameObject を1つ以上追加してください。", "OK");
+                SetStatus(Tr("ターゲットが設定されていません。", "No targets selected."), StatusType.Error);
+                EditorUtility.DisplayDialog(Title, Tr("ターゲットの GameObject を1つ以上追加してください。", "Please add at least one target GameObject."), "OK");
                 return;
             }
 
             var renderers = CurvatureBakePipeline.CollectRenderers(targets);
             if (renderers.Count == 0)
             {
-                SetStatus("対象に MeshRenderer または SkinnedMeshRenderer が見つかりません。", StatusType.Error);
-                EditorUtility.DisplayDialog(Title, "No MeshRenderer or SkinnedMeshRenderer found in the targets.", "OK");
+                SetStatus(Tr("対象に MeshRenderer または SkinnedMeshRenderer が見つかりません。", "No MeshRenderer or SkinnedMeshRenderer found in the targets."), StatusType.Error);
+                EditorUtility.DisplayDialog(Title, Tr("対象に MeshRenderer または SkinnedMeshRenderer が見つかりません。", "No MeshRenderer or SkinnedMeshRenderer found in the targets."), "OK");
                 return;
             }
             if (!EnsureReadable(renderers))
@@ -810,7 +988,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             _cancellation = new CancellationTokenSource();
             SetBakeInProgress(true);
-            SetStatus("ベイク処理を実行中...", StatusType.Info);
+            SetStatus(Tr("ベイク処理を実行中...", "Bake in progress..."), StatusType.Info);
 
             var progress = new ImmediateProgress(p =>
             {
@@ -826,8 +1004,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             catch (Exception e)
             {
                 Debug.LogException(e);
-                SetStatus("ベイクが失敗しました: " + e.Message, StatusType.Error);
-                EditorUtility.DisplayDialog(Title, "Bake failed: " + e.Message, "OK");
+                SetStatus(Tr($"ベイクが失敗しました: {e.Message}", $"Bake failed: {e.Message}"), StatusType.Error);
+                EditorUtility.DisplayDialog(Title, Tr($"ベイクが失敗しました: {e.Message}", $"Bake failed: {e.Message}"), "OK");
             }
             finally
             {
@@ -847,7 +1025,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             if (_bakeButton != null)
             {
-                _bakeButton.text = baking ? "Baking..." : "Bake Curvature";
+                _bakeButton.text = baking ? Tr("ベイク中...", "Baking...") : Tr("曲率テクスチャをベイク", "Bake Curvature");
                 _bakeButton.SetEnabled(!baking);
             }
             _addSelectedButton?.SetEnabled(!baking);
@@ -862,17 +1040,20 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 return true;
 
             string names = string.Join("\n", unreadable.Select(m => "- " + m.name));
-            if (!EditorUtility.DisplayDialog(Title,
-                    "The following meshes need Read/Write enabled to be baked:\n" + names + "\n\nEnable it now?",
-                    "Enable", "Cancel"))
+            string message = Tr(
+                $"以下のメッシュをベイクするには Read/Write の有効化が必要です:\n{names}\n\n今すぐ有効化しますか？",
+                $"The following meshes need Read/Write enabled to be baked:\n{names}\n\nEnable it now?");
+
+            if (!EditorUtility.DisplayDialog(Title, message, Tr("有効化", "Enable"), Tr("キャンセル", "Cancel")))
                 return false;
 
             List<Mesh> failed = MeshReadabilityUtility.EnableReadWrite(unreadable);
             if (failed.Count == 0)
                 return true;
 
+            string failedNames = string.Join("\n", failed.Select(m => "- " + m.name));
             EditorUtility.DisplayDialog(Title,
-                "Could not enable Read/Write for:\n" + string.Join("\n", failed.Select(m => "- " + m.name)), "OK");
+                Tr($"以下のメッシュの Read/Write を有効化できませんでした:\n{failedNames}", $"Could not enable Read/Write for:\n{failedNames}"), "OK");
             return false;
         }
 
@@ -887,21 +1068,22 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             if (report.Cancelled)
             {
-                SetStatus("ベイクが中断されました。", StatusType.Info);
-                EditorUtility.DisplayDialog(Title, "ベイク処理がキャンセルされました。", "OK");
+                SetStatus(Tr("ベイクが中断されました。", "Bake cancelled."), StatusType.Info);
+                EditorUtility.DisplayDialog(Title, Tr("ベイク処理がキャンセルされました。", "Bake process was cancelled."), "OK");
                 return;
             }
 
             if (report.Errors.Count > 0)
             {
-                string message = $"Saved {report.SavedAssetPaths.Count} texture(s) in {report.Elapsed.TotalSeconds:F1}s.\n\nErrors:\n" +
-                                 string.Join("\n", report.Errors);
-                SetStatus("エラーが発生しました。", StatusType.Error);
+                string message = Tr(
+                    $"{report.SavedAssetPaths.Count} 枚のテクスチャを保存しました ({report.Elapsed.TotalSeconds:F1}s)\n\nエラー:\n{string.Join("\n", report.Errors)}",
+                    $"Saved {report.SavedAssetPaths.Count} texture(s) in {report.Elapsed.TotalSeconds:F1}s.\n\nErrors:\n{string.Join("\n", report.Errors)}");
+                SetStatus(Tr("エラーが発生しました。", "An error occurred."), StatusType.Error);
                 EditorUtility.DisplayDialog(Title, message, "OK");
                 return;
             }
 
-            SetStatus($"ベイク完了: {report.SavedAssetPaths.Count} 枚のテクスチャを保存しました ({report.Elapsed.TotalSeconds:F1}s)", StatusType.Success);
+            SetStatus(Tr($"ベイク完了: {report.SavedAssetPaths.Count} 枚のテクスチャを保存しました ({report.Elapsed.TotalSeconds:F1}s)", $"Bake completed: Saved {report.SavedAssetPaths.Count} texture(s) ({report.Elapsed.TotalSeconds:F1}s)"), StatusType.Success);
         }
 
         private sealed class ImmediateProgress : IProgress<BakeProgress>

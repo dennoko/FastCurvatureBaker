@@ -33,7 +33,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             "符号平坦グレー凸部白凹部黒摩耗汚れ埃陰影直角角度直角折り目近接背面除外内積" +
             "しきい値サンプリング点数計算時間メモリ消費量ジャギー滑らかエイリアシング接続" +
             "連結成分衣服皮膚干渉隙間一体急峻溝底部継ぎ目最新版取得再確認カーソル合わせる" +
-            "意味影響細かな薄い板裏表マイルド淡い階調微細起伏広範囲全体";
+            "意味影響細かな薄い板裏表マイルド淡い階調微細起伏広範囲全体言語英語日本語戻す中枚";
 
         private static FontAsset _font;
         private static bool _unavailable;
