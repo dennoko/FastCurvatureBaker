@@ -301,11 +301,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// Geometric normal of the triangle, oriented to agree with its shading normals
         /// (robust against mirrored transforms and flipped winding).
         /// </summary>
-        private static Vector3 FaceNormal(SurfaceMesh mesh, EdgeSide side)
+        private static Vector3 FaceNormal(SurfaceMesh mesh, EdgeSide side) =>
+            mesh.FaceNormal(side.From, side.To, side.Opposite);
+
+        /// <summary>
+        /// Geometric normal of the triangle, oriented to agree with its shading normals
+        /// (robust against mirrored transforms and flipped winding). Matches the shader's FaceNormal.
+        /// </summary>
+        public Vector3 FaceNormal(int i0, int i1, int i2)
         {
-            Vector3 p0 = mesh.Positions[side.From];
-            Vector3 n = SafeNormalize(Vector3.Cross(mesh.Positions[side.To] - p0, mesh.Positions[side.Opposite] - p0));
-            Vector3 shading = mesh.Normals[side.From] + mesh.Normals[side.To] + mesh.Normals[side.Opposite];
+            Vector3 p0 = Positions[i0];
+            Vector3 n = SafeNormalize(Vector3.Cross(Positions[i1] - p0, Positions[i2] - p0));
+            Vector3 shading = Normals[i0] + Normals[i1] + Normals[i2];
             return Vector3.Dot(n, shading) < 0f ? -n : n;
         }
 

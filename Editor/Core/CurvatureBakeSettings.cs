@@ -9,7 +9,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     {
         /// <summary>Uses the mesh's shading normals. Smooth result that follows the shading of low-poly meshes.</summary>
         ShadingNormals = 0,
-        /// <summary>Uses vertex positions only. Picks up every polygon crease (high-poly / hard-surface meshes).</summary>
+        /// <summary>
+        /// Uses positions and triangle (face) normals; the shading normals only decide which edges are hard.
+        /// Picks up every polygon crease (high-poly / hard-surface meshes).
+        /// </summary>
         Geometry = 1,
     }
 

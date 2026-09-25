@@ -29,7 +29,8 @@ StructuredBuffer<uint2>  _RasterTiles;      // (triangle, tileX | tileY << 16), 
 //   _GDist:     conservative pass scratch: smallest distance² (as uint) of a
 //               candidate triangle. Shares its buffer with _GNormal.
 //   _GPosition: xyz = world position, w = patch id + 1 (0 = empty texel)
-//   _GNormal:   octahedral-encoded normal (16 + 16 bit)
+//   _GNormal:   octahedral-encoded normal (16 + 16 bit): shading normal, or the
+//               face normal for the geometry estimator
 // ---------------------------------------------------------------------------
 RWStructuredBuffer<uint>   _GOwner;
 RWStructuredBuffer<uint>   _GDist;
@@ -95,7 +96,7 @@ uint   _EdgeCount;      // 0 = no hard edges bound
 float  _Radius;
 float  _Strength;
 float  _NormalRejection;
-float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator
+float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator (face normals)
 uint   _SameComponentOnly;
 float  _EdgeWidth;
 float  _EdgeStrength;
@@ -232,6 +233,15 @@ float3 ClosestOnBorder(float2 p, float2 a, float2 b, float2 c, out precise float
     if (dbc <= dca)               { dist2 = dbc; return float3(0.0, 1.0 - tbc, tbc); }
     dist2 = dca;
     return float3(tca, 0.0, 1.0 - tca);
+}
+
+// Geometric normal oriented to agree with the shading normals (SurfaceMesh.FaceNormal).
+float3 FaceNormal(uint i0, uint i1, uint i2)
+{
+    float3 p0 = _Positions[i0];
+    float3 shading = _Normals[i0] + _Normals[i1] + _Normals[i2];
+    float3 n = SafeNormalize(cross(_Positions[i1] - p0, _Positions[i2] - p0), SafeNormalize(shading, float3(0, 0, 1)));
+    return dot(n, shading) < 0.0 ? -n : n;
 }
 
 // ---------------------------------------------------------------------------
@@ -371,9 +381,11 @@ void ResolveGBuffer(uint3 id : SV_DispatchThreadID)
     }
 
     float3 position = w.x * _Positions[i0] + w.y * _Positions[i1] + w.z * _Positions[i2];
-    float3 normal   = w.x * _Normals[i0]   + w.y * _Normals[i1]   + w.z * _Normals[i2];
+    float3 normal   = _GeometryWeight > 0.5
+                    ? FaceNormal(i0, i1, i2)
+                    : SafeNormalize(w.x * _Normals[i0] + w.y * _Normals[i1] + w.z * _Normals[i2], _Normals[i0]);
     _GPosition[index] = float4(position, (float)(_Patches[i0] + 1));
-    _GNormal[index]   = EncodeNormal(SafeNormalize(normal, _Normals[i0]));
+    _GNormal[index]   = EncodeNormal(normal);
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +405,11 @@ void ResolveGBuffer(uint3 id : SV_DispatchThreadID)
 //                     rather than the texel's own normal keeps the response
 //                     symmetric. Exact for spheres (dn = d / R).
 //    Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
-//                     (E[d^2] = r^2 / 4 under this kernel; exact for spheres)
+//                     (E[d^2] = r^2 / 4 under this kernel; exact for spheres).
+//                     Texel and sample normals are face normals here, so custom
+//                     shading normals cannot tilt n_avg: on a plane n_avg is the
+//                     plane normal and a lopsided neighbourhood (open border)
+//                     only shifts the centroid tangentially, which adds nothing.
 //
 //    Samples on the same mesh part but a different smooth patchId lie across a
 //    hard edge and are skipped: hard edges belong to the edge term, so their

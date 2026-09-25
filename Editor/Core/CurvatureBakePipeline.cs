@@ -168,7 +168,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             float requestedSpacing = settings.Radius / settings.SamplesPerRadius;
             float spacing = requestedSpacing;
-            SurfaceSample[] samples = SurfaceSampler.Generate(mesh, ref spacing);
+            SurfaceSample[] samples = SurfaceSampler.Generate(mesh, ref spacing, settings.Source == CurvatureSource.Geometry);
             if (spacing > requestedSpacing * 1.001f)
             {
                 Debug.LogWarning($"{LogPrefix} '{renderer.name}': sample budget reached, spacing widened " +

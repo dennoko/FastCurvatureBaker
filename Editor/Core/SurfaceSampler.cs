@@ -27,7 +27,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private const double R2B = 0.5698402909980532;
 
         /// <param name="spacing">Target distance between neighbouring samples. May be enlarged to respect <see cref="MaxSamples"/>.</param>
-        public static SurfaceSample[] Generate(SurfaceMesh mesh, ref float spacing)
+        /// <param name="faceNormals">Give samples the triangle's geometric normal instead of the interpolated shading normal.</param>
+        public static SurfaceSample[] Generate(SurfaceMesh mesh, ref float spacing, bool faceNormals)
         {
             int triangleCount = 0;
             foreach (int[] tris in mesh.SubMeshTriangles)
@@ -63,6 +64,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     int k = SamplesForTriangle(area, invCellArea);
                     float weight = area / k;
                     uint patch = mesh.PatchIds[i0];
+                    Vector3 faceNormal = faceNormals ? mesh.FaceNormal(i0, i1, i2) : Vector3.zero;
 
                     // Per-triangle offset decorrelates the sequence between neighbouring triangles.
                     uint h = Hash((uint)written);
@@ -91,8 +93,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         samples[written++] = new SurfaceSample
                         {
                             Position = w0 * mesh.Positions[i0] + u * mesh.Positions[i1] + v * mesh.Positions[i2],
-                            Normal = SurfaceMesh.SafeNormalize(
-                                w0 * mesh.Normals[i0] + u * mesh.Normals[i1] + v * mesh.Normals[i2]),
+                            Normal = faceNormals
+                                ? faceNormal
+                                : SurfaceMesh.SafeNormalize(w0 * mesh.Normals[i0] + u * mesh.Normals[i1] + v * mesh.Normals[i2]),
                             Patch = patch,
                             Weight = weight,
                         };

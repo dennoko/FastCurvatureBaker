@@ -119,6 +119,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 // ---- G-buffer ----
                 _shader.SetInt("_Width", res);
                 _shader.SetInt("_TileSize", tileSize);
+                _shader.SetFloat("_GeometryWeight", settings.Source == CurvatureSource.Geometry ? 1f : 0f);
 
                 _shader.SetBuffer(_kClear, "_GOwner", gOwner);
                 _shader.SetBuffer(_kClear, "_GDist", gNormal);
@@ -163,7 +164,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 _shader.SetFloat("_Radius", settings.Radius);
                 _shader.SetFloat("_Strength", settings.Strength);
                 _shader.SetFloat("_NormalRejection", settings.NormalRejection);
-                _shader.SetFloat("_GeometryWeight", settings.Source == CurvatureSource.Geometry ? 1f : 0f);
                 _shader.SetInt("_SameComponentOnly", settings.SameComponentOnly ? 1 : 0);
 
                 _shader.SetInt("_EdgeCount", _edgeGrid != null ? _edgeGrid.SortedItems.Length : 0);
