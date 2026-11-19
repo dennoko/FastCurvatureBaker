@@ -176,7 +176,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             SpatialHashGrid<SurfaceSample> grid = null;
             SpatialHashGrid<EdgeSegment> edgeGrid = null;
             float edgeMaxReach = 0f;
-            float[][] subMeshBevelCore = null;
             int detectedEdgeCount = 0;
 
             await Task.Run(() =>
@@ -192,18 +191,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
                 if (settings.EdgeStrength > 0f)
                 {
-                    List<HardEdge> edges;
-                    if (isSharpConvex)
-                    {
-                        SharpConvexResult sharp = SharpConvexDetector.Detect(
-                            mesh, settings.SharpMinAngle, settings.MaxBevelWidth, token);
-                        edges = sharp.Edges;
-                        subMeshBevelCore = sharp.SubMeshBevelCore;
-                    }
-                    else
-                    {
-                        edges = mesh.HardEdges;
-                    }
+                    List<HardEdge> edges = isSharpConvex
+                        ? SharpConvexDetector.Detect(mesh, settings.SharpMinAngle, settings.MaxBevelWidth, token)
+                        : mesh.HardEdges;
 
                     detectedEdgeCount = edges.Count;
                     if (edges.Count > 0)
@@ -246,9 +236,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 float subStart = PrepareShare + (1f - PrepareShare) * i / subMeshes.Count;
                 float subSpan = (1f - PrepareShare) / subMeshes.Count;
 
-                float[] bevelCore = subMeshBevelCore != null ? subMeshBevelCore[sub] : null;
                 Vector2[] data = await gpu.BakeSubMeshAsync(
-                    mesh.SubMeshTriangles[sub], bevelCore, settings,
+                    mesh.SubMeshTriangles[sub], settings,
                     (p, message) => progress(subStart + subSpan * p, label + message),
                     token);
 

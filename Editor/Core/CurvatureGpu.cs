@@ -104,7 +104,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// </summary>
         public async Task<Vector2[]> BakeSubMeshAsync(
             int[] triangles,
-            float[] bevelCore,
             CurvatureBakeSettings settings,
             Action<float, string> progress,
             CancellationToken token)
@@ -116,7 +115,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             int res = outputRes * settings.SupersampleFactor;
             int texels = res * res;
 
-            ComputeBuffer triangleBuffer = null, islandBuffer = null, bevelCoreBuffer = null, tileBuffer = null;
+            ComputeBuffer triangleBuffer = null, islandBuffer = null, tileBuffer = null;
             ComputeBuffer gOwner = null, gPosition = null, gNormal = null;
             ComputeBuffer result = null, pingA = null, pingB = null;
             ComputeBuffer jfaA = null, jfaB = null;
@@ -136,10 +135,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 progress(0.01f, "Rasterizing UV");
                 triangleBuffer = CreateBuffer(triangles, 4);
                 islandBuffer = CreateBuffer(islands, 4);
-                bool useBevelCore = bevelCore != null && bevelCore.Length > 0;
-                bevelCoreBuffer = useBevelCore
-                    ? CreateBuffer(bevelCore, 4)
-                    : CreateBuffer(new float[1], 4);
 
                 gOwner = new ComputeBuffer(texels, 4);
                 gPosition = new ComputeBuffer(texels, 16);
@@ -214,13 +209,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 }
                 _shader.SetFloat("_EdgeWidth", settings.EdgeWidth);
                 _shader.SetFloat("_EdgeStrength", settings.EdgeStrength);
-                _shader.SetInt("_UseBevelCore", useBevelCore ? 1 : 0);
+                _shader.SetInt("_SharpConvexMode", settings.Mode == CurvatureBakeMode.SharpConvex ? 1 : 0);
 
                 _shader.SetBuffer(_kEvaluate, "_GPosition", gPosition);
                 _shader.SetBuffer(_kEvaluate, "_GNormal", gNormal);
                 _shader.SetBuffer(_kEvaluate, "_GOwner", gOwner);
                 _shader.SetBuffer(_kEvaluate, "_TriangleIslands", islandBuffer);
-                _shader.SetBuffer(_kEvaluate, "_TriangleBevelCore", bevelCoreBuffer);
                 _shader.SetBuffer(_kEvaluate, "_PatchComponents", _patchComponents);
                 _shader.SetBuffer(_kEvaluate, "_Samples", _samples);
                 _shader.SetBuffer(_kEvaluate, "_SampleCells", _sampleCells);
@@ -236,7 +230,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 gNormal.Release(); gNormal = null;
                 triangleBuffer.Release(); triangleBuffer = null;
                 islandBuffer.Release(); islandBuffer = null;
-                bevelCoreBuffer.Release(); bevelCoreBuffer = null;
 
                 // ---- Post-process ----
                 progress(0.92f, "Post-processing");
@@ -319,7 +312,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             {
                 triangleBuffer?.Release();
                 islandBuffer?.Release();
-                bevelCoreBuffer?.Release();
                 tileBuffer?.Release();
                 gOwner?.Release();
                 gPosition?.Release();

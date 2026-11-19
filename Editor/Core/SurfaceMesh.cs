@@ -47,17 +47,19 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     }
 
     /// <summary>
-    /// An edge where the shading normals are split (hard edge), in world space.
+    /// A hard or sharp convex edge in world space, with per-endpoint intensity so tapered creases
+    /// fade smoothly along edge loops without semicircular end-cap artifacts.
     /// </summary>
     internal struct HardEdge
     {
         public Vector3 A;
         public Vector3 B;
-        public Vector3 FaceNormalA;  // normals of the two adjacent faces
+        public Vector3 FaceNormalA;  // normals of the two adjacent/flank faces
         public Vector3 FaceNormalB;
-        public float Value;          // +1 = 90-degree convex, -1 = 90-degree concave (saturated beyond)
-        public uint PatchA;          // smooth patches of the two adjacent faces (equal for an edge
-        public uint PatchB;          // that ends inside a patch)
+        public float ValueA;         // intensity at endpoint A (+1 = 90-degree convex, -1 = 90-degree concave)
+        public float ValueB;         // intensity at endpoint B
+        public uint PatchA;          // smooth patches of the two adjacent faces
+        public uint PatchB;
     }
 
     /// <summary>
@@ -382,13 +384,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                              Vector3.Dot(nB, mesh.Positions[s0.Opposite] - a);
                 if (bend == 0f) continue;
 
+                float signedStrength = bend < 0f ? strength : -strength;
                 result.Add(new HardEdge
                 {
                     A = a,
                     B = mesh.Positions[s0.To],
                     FaceNormalA = nA,
                     FaceNormalB = nB,
-                    Value = bend < 0f ? strength : -strength,
+                    ValueA = signedStrength,
+                    ValueB = signedStrength,
                     PatchA = mesh.PatchIds[s0.From],
                     PatchB = mesh.PatchIds[s1.From],
                 });

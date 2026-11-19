@@ -64,7 +64,7 @@ StructuredBuffer<SurfaceSample> _Samples;
 StructuredBuffer<CellEntry>     _SampleCells;
 
 // ---------------------------------------------------------------------------
-// Hard/sharp convex edge segments in a second exact hashed grid (60 bytes)
+// Hard/sharp convex edge segments in a second exact hashed grid (64 bytes)
 // ---------------------------------------------------------------------------
 struct EdgeSegment
 {
@@ -72,7 +72,8 @@ struct EdgeSegment
     float3 b;
     float3 faceNormalA;
     float3 faceNormalB;
-    float  value;      // +1 = 90-degree convex (or full sharp mask), -1 = 90-degree concave
+    float  valueA;     // intensity at endpoint a (+1 = 90-deg convex / full sharp mask, -1 = concave)
+    float  valueB;     // intensity at endpoint b
     uint   patchA;     // smooth patches of the two adjacent faces
     uint   patchB;
 };
@@ -84,7 +85,6 @@ StructuredBuffer<CellEntry>   _EdgeCells;
 // Island ids stay exact in float up to 2^24.
 // ---------------------------------------------------------------------------
 StructuredBuffer<uint>     _TriangleIslands;   // UV island id per triangle, see UvLayout.cs
-StructuredBuffer<float>    _TriangleBevelCore; // SharpConvex mode: bevel-interior strength per triangle
 RWStructuredBuffer<float2> _Result;
 StructuredBuffer<float2>   _Src;
 RWStructuredBuffer<float2> _Dst;
@@ -121,7 +121,7 @@ float  _GeometryWeight;   // 0 = shading normals estimator, 1 = geometry estimat
 uint   _SameComponentOnly;
 float  _EdgeWidth;
 float  _EdgeStrength;
-uint   _UseBevelCore;     // 1 = combine edge term with _TriangleBevelCore (SharpConvex mode)
+uint   _SharpConvexMode;  // 1 = SharpConvex mode (filter edges by connected component rather than strict patchId)
 
 uint   _JfaStep;
 uint   _DilationDist2;
@@ -130,10 +130,10 @@ static const uint  NoOwner            = 0xFFFFFFFFu;
 static const uint  NoSeed             = 0xFFFFFFFFu;
 static const float ConservativeRadius = 0.75; // pixels (UvLayout.ConservativeRadius)
 static const float RejectionBand      = 0.25; // normal-dot range over which rejection fades in
-static const float EdgeFacingMin      = 0.3;  // texel normal vs. edge face normal: fade-in range
-static const float EdgeFacingMax      = 0.6;
-static const float EdgePlaneMin       = 0.65; // coplanarity fade-out to block parallel stacked plates
-static const float EdgePlaneMax       = 0.92;
+static const float EdgeFacingMin      = 0.25; // texel normal vs. edge face normal: fade-in range
+static const float EdgeFacingMax      = 0.55;
+static const float EdgePlaneMin       = 0.78; // coplanarity fade-out: allows 45-deg bevels & curved walls, blocks parallel stacked plates
+static const float EdgePlaneMax       = 0.96;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -528,7 +528,7 @@ float SmoothCurvature(float3 p, float3 np, uint patchId, uint component)
     return (sumND - dot(nAvg, sumD)) / sumD2 * _Radius;
 }
 
-float EdgeCurvature(float3 p, float3 np, uint patchId)
+float EdgeCurvature(float3 p, float3 np, uint patchId, uint component)
 {
     if (_EdgeCount == 0)
         return 0.0;
@@ -566,7 +566,14 @@ float EdgeCurvature(float3 p, float3 np, uint patchId)
                 for (uint s = range.x; s < end; s++)
                 {
                     EdgeSegment edge = _Edges[s];
-                    if (edge.patchA != patchId && edge.patchB != patchId) continue;
+                    if (_SharpConvexMode != 0)
+                    {
+                        if (_SameComponentOnly != 0 && _PatchComponents[edge.patchA] != component) continue;
+                    }
+                    else
+                    {
+                        if (edge.patchA != patchId && edge.patchB != patchId) continue;
+                    }
 
                     float3 ab = edge.b - edge.a;
                     float  t  = saturate(dot(p - edge.a, ab) / max(dot(ab, ab), 1e-20));
@@ -574,7 +581,7 @@ float EdgeCurvature(float3 p, float3 np, uint patchId)
                     float  d2 = dot(c, c);
                     if (d2 >= w2) continue;
 
-                    // Require the texel to both face one of the edge's adjacent faces AND lie near
+                    // Require the texel to both face one of the edge's adjacent/flank faces AND lie near
                     // that face's plane (blocks bleed-through onto back sides and parallel stacked sheets).
                     float  dist   = sqrt(d2);
                     float3 vDir   = dist > 1e-6 ? (-c / dist) : float3(0, 0, 0);
@@ -586,7 +593,8 @@ float EdgeCurvature(float3 p, float3 np, uint patchId)
                     if (facing <= 0.0) continue;
 
                     float k = 1.0 - d2 * invW2;
-                    float v = edge.value * k * k * facing;
+                    float edgeValue = lerp(edge.valueA, edge.valueB, t);
+                    float v = edgeValue * k * k * facing;
                     if (abs(v) > abs(best)) best = v;
                 }
             }
@@ -626,12 +634,7 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
     if (_Strength > 0.0)
         value += _Strength * SmoothCurvature(p, np, patchId, component);
     if (_EdgeStrength > 0.0)
-    {
-        float edgeVal = EdgeCurvature(p, np, patchId);
-        if (_UseBevelCore != 0)
-            edgeVal = max(edgeVal, _TriangleBevelCore[ownerTri]);
-        value += _EdgeStrength * edgeVal;
-    }
+        value += _EdgeStrength * EdgeCurvature(p, np, patchId, component);
     _Result[index] = float2(value, (float)(_TriangleIslands[ownerTri] + 1));
 }
 

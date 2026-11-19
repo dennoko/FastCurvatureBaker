@@ -5,28 +5,22 @@ using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
-    internal sealed class SharpConvexResult
-    {
-        public List<HardEdge> Edges;
-        /// <summary>
-        /// Per-submesh, per-triangle bevel core strength in [0, 1]. Non-zero for triangles that lie
-        /// strictly inside a detected narrow convex bevel so the bevel face never develops a dark
-        /// centerline dip when EdgeWidth is narrower than the bevel. Null entries mean no bevel faces.
-        /// </summary>
-        public float[][] SubMeshBevelCore;
-    }
-
     /// <summary>
-    /// Detects convex sharp corners — both split-normal hard edges, smooth-shaded sharp creases,
-    /// and narrow 1-to-N segment bevels whose cumulative convex bend reaches <c>minAngleDeg</c>
-    /// within <c>maxBevelWidth</c> — while rejecting smooth curved surfaces and concave creases.
+    /// Detects convex sharp corners — split-normal hard edges, smooth-shaded sharp creases, and
+    /// narrow 1-to-N segment bevels whose cumulative convex bend reaches <c>minAngleDeg</c> within
+    /// <c>maxBevelWidth</c> — while rejecting smooth curved surfaces, concave creases, and shallow
+    /// triangulation/holding edges adjacent to real corners.
     /// </summary>
     internal static class SharpConvexDetector
     {
         private const int MaxHops = 32;
         private const float CoplanarToleranceRad = 2f * Mathf.Deg2Rad;
         private const float ConcaveStopRad = 5f * Mathf.Deg2Rad;
-        private const float SingleEdgeFastAcceptRad = 85f * Mathf.Deg2Rad;
+        private const float ParallelMinDot = 0.75f;        // ~41 deg max misalignment between bevel edges
+        private const float CollinearMinDot = 0.70f;       // ~45 deg max turn along a continuous edge loop
+        private const float TailMinAngleRad = 8f * Mathf.Deg2Rad;
+        private const float MaxPiggybackRatio = 4.0f;
+        private const float WidthSoftFadeRatio = 1.5f;     // soft falloff from 1.0x to 1.5x MaxBevelWidth
 
         private struct EdgeHalf
         {
@@ -52,10 +46,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             public int EdgeB;
             public int From;
             public int To;
+            public int PosFrom;
+            public int PosTo;
+            public Vector3 Dir;
             public float SignedAngle;
         }
 
-        public static SharpConvexResult Detect(
+        public static List<HardEdge> Detect(
             SurfaceMesh mesh,
             float minAngleDeg,
             float maxBevelWidth,
@@ -71,22 +68,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 if (tris != null)
                     totalTris += tris.Length / 3;
             }
-
             if (totalTris == 0)
-            {
-                return new SharpConvexResult
-                {
-                    Edges = new List<HardEdge>(),
-                    SubMeshBevelCore = new float[subCount][],
-                };
-            }
+                return new List<HardEdge>();
 
             // Flatten all triangle submeshes so bevel marches cross material seams seamlessly.
             var triV0 = new int[totalTris];
             var triV1 = new int[totalTris];
             var triV2 = new int[totalTris];
-            var triSub = new int[totalTris];
-            var triLocal = new int[totalTris];
             var triNormal = new Vector3[totalTris];
 
             int gTri = 0;
@@ -103,8 +91,6 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     triV0[gTri] = i0;
                     triV1[gTri] = i1;
                     triV2[gTri] = i2;
-                    triSub[gTri] = sub;
-                    triLocal[gTri] = lt;
                     triNormal[gTri] = mesh.FaceNormal(i0, i1, i2);
                 }
             }
@@ -112,6 +98,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             // Build position-welded manifold edge table and per-triangle dual adjacency.
             int[] posId = mesh.PositionIds;
+            int maxPosId = 0;
+            for (int i = 0; i < posId.Length; i++)
+            {
+                if (posId[i] > maxPosId) maxPosId = posId[i];
+            }
+
             var edgeMap = new Dictionary<long, EdgeEntry>(totalTris * 3 / 2);
             for (int t = 0; t < totalTris; t++)
             {
@@ -125,10 +117,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             var adjTri = new int[totalTris * 3];
             var adjEdge = new int[totalTris * 3];
             var adjAngle = new float[totalTris * 3];
+            var adjDir = new Vector3[totalTris * 3];
             for (int i = 0; i < adjTri.Length; i++)
                 adjTri[i] = -1;
 
-            var manifoldEdges = new List<ManifoldEdge>(edgeMap.Count);
+            var convexEdges = new List<ManifoldEdge>(edgeMap.Count / 2);
             Vector3[] positions = mesh.Positions;
             foreach (EdgeEntry entry in edgeMap.Values)
             {
@@ -141,6 +134,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 float angle = Mathf.Acos(Mathf.Clamp(Vector3.Dot(nA, nB), -1f, 1f));
 
                 Vector3 aPos = positions[h0.From];
+                Vector3 bPos = positions[h0.To];
+                Vector3 edgeVec = bPos - aPos;
+                float edgeLen = edgeVec.magnitude;
+                if (edgeLen <= 1e-12f) continue;
+                Vector3 dir = edgeVec / edgeLen;
+
                 float bend = Vector3.Dot(nA, positions[h1.Opposite] - aPos) +
                              Vector3.Dot(nB, positions[h0.Opposite] - aPos);
                 float signedAngle = bend < 0f ? angle : (bend > 0f ? -angle : 0f);
@@ -150,14 +149,16 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 adjTri[idx0] = h1.Tri;
                 adjEdge[idx0] = h1.LocalEdge;
                 adjAngle[idx0] = signedAngle;
+                adjDir[idx0] = dir;
 
                 adjTri[idx1] = h0.Tri;
                 adjEdge[idx1] = h0.LocalEdge;
                 adjAngle[idx1] = signedAngle;
+                adjDir[idx1] = dir;
 
                 if (signedAngle > CoplanarToleranceRad)
                 {
-                    manifoldEdges.Add(new ManifoldEdge
+                    convexEdges.Add(new ManifoldEdge
                     {
                         TriA = h0.Tri,
                         EdgeA = h0.LocalEdge,
@@ -165,162 +166,269 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         EdgeB = h1.LocalEdge,
                         From = h0.From,
                         To = h0.To,
+                        PosFrom = posId[h0.From],
+                        PosTo = posId[h0.To],
+                        Dir = dir,
                         SignedAngle = signedAngle,
                     });
                 }
             }
             token.ThrowIfCancellationRequested();
 
+            int edgeCount = convexEdges.Count;
+            if (edgeCount == 0)
+                return new List<HardEdge>();
+
             float minAngleRad = minAngleDeg * Mathf.Deg2Rad;
             float fullAngleDeg = minAngleDeg < 75f
                 ? minAngleDeg + 15f
                 : Mathf.Min(minAngleDeg + 10f, 175f);
             float fullAngleRad = fullAngleDeg * Mathf.Deg2Rad;
-            float invRamp = 1f / Mathf.Max(fullAngleRad - minAngleRad, 1e-4f);
+            float marchLimit = maxBevelWidth * WidthSoftFadeRatio;
+            float minLocalCurv = maxBevelWidth > 1e-6f ? 0.5f * (minAngleRad / maxBevelWidth) : 0f;
 
-            var detectedEdges = new List<HardEdge>();
-            float[] globalBevelCore = maxBevelWidth > 1e-6f ? new float[totalTris] : null;
-            bool anyBevelCore = false;
+            var rawStrength = new float[edgeCount];
+            var flankNormA = new Vector3[edgeCount];
+            var flankNormB = new Vector3[edgeCount];
 
             // Preallocated scratch buffers for zero-GC cross-section marches.
             var distA = new float[MaxHops + 1];
             var angA = new float[MaxHops + 1];
-            var crossTriA = new int[MaxHops];
-            var crossDistA = new float[MaxHops];
+            var normA = new Vector3[MaxHops + 1];
 
             var distB = new float[MaxHops + 1];
             var angB = new float[MaxHops + 1];
-            var crossTriB = new int[MaxHops];
-            var crossDistB = new float[MaxHops];
+            var normB = new Vector3[MaxHops + 1];
 
             var visited = new int[MaxHops + 2];
 
-            for (int i = 0; i < manifoldEdges.Count; i++)
+            for (int i = 0; i < edgeCount; i++)
             {
                 if ((i & 1023) == 0) token.ThrowIfCancellationRequested();
 
-                ManifoldEdge me = manifoldEdges[i];
-                float bestAngle = me.SignedAngle;
-                float bestDistA = 0f;
-                float bestDistB = 0f;
-                int countCrossA = 0;
-                int countCrossB = 0;
-                bool marched = false;
+                ManifoldEdge me = convexEdges[i];
+                Vector3 baseNA = triNormal[me.TriA];
+                Vector3 baseNB = triNormal[me.TriB];
+                flankNormA[i] = baseNA;
+                flankNormB[i] = baseNB;
 
-                if (maxBevelWidth > 1e-6f && me.SignedAngle < SingleEdgeFastAcceptRad)
+                float baseStrength = Smoothstep(minAngleRad, fullAngleRad, me.SignedAngle);
+                if (maxBevelWidth <= 1e-6f || baseStrength >= 0.999f)
                 {
-                    Vector3 pA = positions[me.From];
-                    Vector3 pB = positions[me.To];
-                    Vector3 edgeVec = pB - pA;
-                    float edgeLen = edgeVec.magnitude;
-                    if (edgeLen > 1e-12f)
-                    {
-                        marched = true;
-                        Vector3 edgeU = edgeVec / edgeLen;
-                        Vector3 mid = (pA + pB) * 0.5f;
-
-                        int bendsA = MarchSide(
-                            me.TriA, me.EdgeA, mid, edgeU, maxBevelWidth,
-                            positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle,
-                            distA, angA, crossTriA, crossDistA, visited, out countCrossA);
-
-                        int bendsB = MarchSide(
-                            me.TriB, me.EdgeB, mid, edgeU, maxBevelWidth,
-                            positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle,
-                            distB, angB, crossTriB, crossDistB, visited, out countCrossB);
-
-                        // Sliding window: maximize cumulative convex turning angle over any span <= maxBevelWidth.
-                        float limit = maxBevelWidth + 1e-6f;
-                        for (int a = 0; a < bendsA; a++)
-                        {
-                            float dA = distA[a];
-                            float aA = angA[a];
-                            for (int b = 0; b < bendsB; b++)
-                            {
-                                if (dA + distB[b] > limit)
-                                    break; // distB is non-decreasing
-                                float total = me.SignedAngle + aA + angB[b];
-                                if (total > bestAngle)
-                                {
-                                    bestAngle = total;
-                                    bestDistA = dA;
-                                    bestDistB = distB[b];
-                                }
-                            }
-                        }
-                    }
+                    rawStrength[i] = baseStrength;
+                    continue;
                 }
 
-                if (bestAngle <= minAngleRad)
-                    continue;
+                // Sample 3 points along the edge (25%, 50%, 75%) and take the median:
+                // - rescues midpoint vertex-grazing / skewed triangulation
+                // - rejects single-tip proximity false positives
+                // - smoothly transitions along variable-width tapered bevels
+                Vector3 pA = positions[me.From];
+                Vector3 pB = positions[me.To];
 
-                float tRamp = Mathf.Clamp01((bestAngle - minAngleRad) * invRamp);
-                float strength = tRamp * tRamp * (3f - 2f * tRamp);
-                if (strength < 0.01f)
+                float s25 = EvalAtPoint(
+                    pA * 0.75f + pB * 0.25f, me, baseStrength,
+                    minAngleRad, fullAngleRad, maxBevelWidth, marchLimit, minLocalCurv,
+                    positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle, adjDir,
+                    distA, angA, normA, distB, angB, normB, visited,
+                    out Vector3 nA25, out Vector3 nB25);
+
+                float s50 = EvalAtPoint(
+                    (pA + pB) * 0.5f, me, baseStrength,
+                    minAngleRad, fullAngleRad, maxBevelWidth, marchLimit, minLocalCurv,
+                    positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle, adjDir,
+                    distA, angA, normA, distB, angB, normB, visited,
+                    out Vector3 nA50, out Vector3 nB50);
+
+                float s75 = EvalAtPoint(
+                    pA * 0.25f + pB * 0.75f, me, baseStrength,
+                    minAngleRad, fullAngleRad, maxBevelWidth, marchLimit, minLocalCurv,
+                    positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle, adjDir,
+                    distA, angA, normA, distB, angB, normB, visited,
+                    out Vector3 nA75, out Vector3 nB75);
+
+                // Select median strength and its corresponding flank normals.
+                if ((s50 >= s25 && s50 <= s75) || (s50 >= s75 && s50 <= s25))
+                {
+                    rawStrength[i] = s50;
+                    flankNormA[i] = nA50;
+                    flankNormB[i] = nB50;
+                }
+                else if ((s25 >= s50 && s25 <= s75) || (s25 >= s75 && s25 <= s50))
+                {
+                    rawStrength[i] = s25;
+                    flankNormA[i] = nA25;
+                    flankNormB[i] = nB25;
+                }
+                else
+                {
+                    rawStrength[i] = s75;
+                    flankNormA[i] = nA75;
+                    flankNormB[i] = nB75;
+                }
+            }
+            token.ThrowIfCancellationRequested();
+
+            // Build compact vertex -> convex edge linked list for O(E) collinear endpoint blending.
+            var head = new int[maxPosId + 1];
+            for (int i = 0; i < head.Length; i++) head[i] = -1;
+            var linkEdge = new int[edgeCount * 2];
+            var linkNext = new int[edgeCount * 2];
+            int linkCursor = 0;
+            for (int i = 0; i < edgeCount; i++)
+            {
+                int p0 = convexEdges[i].PosFrom;
+                linkEdge[linkCursor] = i;
+                linkNext[linkCursor] = head[p0];
+                head[p0] = linkCursor++;
+
+                int p1 = convexEdges[i].PosTo;
+                linkEdge[linkCursor] = i;
+                linkNext[linkCursor] = head[p1];
+                head[p1] = linkCursor++;
+            }
+
+            // Blend endpoint intensities across collinear continuing edges so tapered bevels fade
+            // smoothly to 0 without abrupt semicircular end-caps (blobs), while sharp corners stay 1.0.
+            var detectedEdges = new List<HardEdge>();
+            for (int i = 0; i < edgeCount; i++)
+            {
+                ManifoldEdge me = convexEdges[i];
+                float sSelf = rawStrength[i];
+                float valA = ComputeEndpointStrength(i, me.PosFrom, -me.Dir, sSelf, me.SignedAngle, convexEdges, rawStrength, head, linkEdge, linkNext);
+                float valB = ComputeEndpointStrength(i, me.PosTo, me.Dir, sSelf, me.SignedAngle, convexEdges, rawStrength, head, linkEdge, linkNext);
+
+                if (valA < 0.01f && valB < 0.01f)
                     continue;
 
                 detectedEdges.Add(new HardEdge
                 {
                     A = positions[me.From],
                     B = positions[me.To],
-                    FaceNormalA = triNormal[me.TriA],
-                    FaceNormalB = triNormal[me.TriB],
-                    Value = strength,
+                    FaceNormalA = flankNormA[i],
+                    FaceNormalB = flankNormB[i],
+                    ValueA = valA,
+                    ValueB = valB,
                     PatchA = mesh.PatchIds[triV0[me.TriA]],
                     PatchB = mesh.PatchIds[triV0[me.TriB]],
                 });
+            }
 
-                // Mark triangles strictly between the outermost detected bevel edges so bevel strips
-                // stay solid without a dark dip when EdgeWidth is narrower than the bevel.
-                if (marched && globalBevelCore != null)
+            return detectedEdges;
+        }
+
+        private static float ComputeEndpointStrength(
+            int selfIdx, int vertexPosId, Vector3 outwardDir, float selfStrength, float selfAngle,
+            List<ManifoldEdge> edges, float[] rawStrength,
+            int[] head, int[] linkEdge, int[] linkNext)
+        {
+            int bestOther = -1;
+            float bestDot = CollinearMinDot;
+            for (int node = head[vertexPosId]; node >= 0; node = linkNext[node])
+            {
+                int other = linkEdge[node];
+                if (other == selfIdx) continue;
+                ManifoldEdge oe = edges[other];
+                // Outgoing direction of `other` leaving `vertexPosId`.
+                Vector3 otherOut = oe.PosFrom == vertexPosId ? oe.Dir : -oe.Dir;
+                float d = Vector3.Dot(otherOut, outwardDir);
+                if (d > bestDot)
                 {
-                    if (bestDistA > 0f)
+                    bestDot = d;
+                    bestOther = other;
+                }
+            }
+
+            if (bestOther < 0)
+                return selfStrength;
+
+            float otherStrength = rawStrength[bestOther];
+            // Do not bleed a fade-out tail onto a tiny flat-wall continuation crease.
+            if (selfStrength <= 0f && otherStrength > 0f)
+            {
+                float otherAngle = edges[bestOther].SignedAngle;
+                if (selfAngle < TailMinAngleRad || selfAngle < 0.35f * otherAngle)
+                    return 0f;
+            }
+            if (otherStrength <= 0f && selfStrength > 0f)
+            {
+                float otherAngle = edges[bestOther].SignedAngle;
+                if (otherAngle < TailMinAngleRad || otherAngle < 0.35f * selfAngle)
+                    return selfStrength;
+            }
+
+            return 0.5f * (selfStrength + otherStrength);
+        }
+
+        private static float EvalAtPoint(
+            Vector3 p, ManifoldEdge me, float baseStrength,
+            float minAngleRad, float fullAngleRad, float maxBevelWidth, float marchLimit, float minLocalCurv,
+            Vector3[] positions, int[] triV0, int[] triV1, int[] triV2, Vector3[] triNormal,
+            int[] adjTri, int[] adjEdge, float[] adjAngle, Vector3[] adjDir,
+            float[] distA, float[] angA, Vector3[] normA,
+            float[] distB, float[] angB, Vector3[] normB,
+            int[] visited,
+            out Vector3 bestNormA, out Vector3 bestNormB)
+        {
+            bestNormA = triNormal[me.TriA];
+            bestNormB = triNormal[me.TriB];
+
+            int bendsA = MarchSide(
+                me.TriA, me.EdgeA, p, me.Dir, me.SignedAngle, minAngleRad, marchLimit,
+                positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle, adjDir,
+                distA, angA, normA, visited, out float firstStepA);
+
+            int bendsB = MarchSide(
+                me.TriB, me.EdgeB, p, me.Dir, me.SignedAngle, minAngleRad, marchLimit,
+                positions, triV0, triV1, triV2, triNormal, adjTri, adjEdge, adjAngle, adjDir,
+                distB, angB, normB, visited, out float firstStepB);
+
+            // Local curvature guard: reject weak creases/holding edges whose own bend-per-width
+            // is far below the target bevel curvature (prevents piggybacking on nearby real corners).
+            float localWidth;
+            if (firstStepA > 0f && firstStepB > 0f)
+                localWidth = 0.5f * (firstStepA + firstStepB);
+            else if (firstStepA > 0f)
+                localWidth = 0.5f * firstStepA;
+            else if (firstStepB > 0f)
+                localWidth = 0.5f * firstStepB;
+            else
+                return baseStrength;
+
+            if (me.SignedAngle / Mathf.Max(localWidth, 1e-6f) < minLocalCurv)
+                return baseStrength;
+
+            float bestStrength = baseStrength;
+            float limit = marchLimit + 1e-6f;
+            for (int a = 0; a < bendsA; a++)
+            {
+                float dA = distA[a];
+                float aA = angA[a];
+                for (int b = 0; b < bendsB; b++)
+                {
+                    float span = dA + distB[b];
+                    if (span > limit)
+                        break; // distB is non-decreasing
+
+                    float total = me.SignedAngle + aA + angB[b];
+                    if (total <= minAngleRad)
+                        continue;
+
+                    float angFactor = Smoothstep(minAngleRad, fullAngleRad, total);
+                    float widthFactor = span <= maxBevelWidth
+                        ? 1f
+                        : 1f - Smoothstep(maxBevelWidth, marchLimit, span);
+                    float cand = angFactor * widthFactor;
+                    if (cand > bestStrength)
                     {
-                        float limA = bestDistA + 1e-6f;
-                        for (int c = 0; c < countCrossA; c++)
-                        {
-                            if (crossDistA[c] <= limA && strength > globalBevelCore[crossTriA[c]])
-                            {
-                                globalBevelCore[crossTriA[c]] = strength;
-                                anyBevelCore = true;
-                            }
-                        }
-                    }
-                    if (bestDistB > 0f)
-                    {
-                        float limB = bestDistB + 1e-6f;
-                        for (int c = 0; c < countCrossB; c++)
-                        {
-                            if (crossDistB[c] <= limB && strength > globalBevelCore[crossTriB[c]])
-                            {
-                                globalBevelCore[crossTriB[c]] = strength;
-                                anyBevelCore = true;
-                            }
-                        }
+                        bestStrength = cand;
+                        bestNormA = normA[a];
+                        bestNormB = normB[b];
                     }
                 }
             }
 
-            // Scatter global bevel core strengths back to per-submesh arrays.
-            var subBevelCore = new float[subCount][];
-            if (anyBevelCore)
-            {
-                for (int t = 0; t < totalTris; t++)
-                {
-                    float v = globalBevelCore[t];
-                    if (v <= 0f) continue;
-                    int sub = triSub[t];
-                    if (subBevelCore[sub] == null)
-                        subBevelCore[sub] = new float[mesh.SubMeshTriangles[sub].Length / 3];
-                    subBevelCore[sub][triLocal[t]] = v;
-                }
-            }
-
-            return new SharpConvexResult
-            {
-                Edges = detectedEdges,
-                SubMeshBevelCore = subBevelCore,
-            };
+            return bestStrength;
         }
 
         private static void AddHalfEdge(
@@ -349,21 +457,22 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         /// <summary>
         /// Walks across the surface perpendicular to <paramref name="edgeU"/> up to <paramref name="maxDist"/>,
-        /// crossing coplanar edges (e.g. quad diagonals) freely and recording every convex turn.
-        /// Stops at concave creases, open borders, or when the distance exceeds <paramref name="maxDist"/>.
+        /// crossing coplanar edges (e.g. quad diagonals) freely and recording parallel convex turns.
+        /// Stops at concave creases, non-parallel convex folds, much sharper standalone corners, or open borders.
         /// </summary>
         private static int MarchSide(
-            int startTri, int entryEdge, Vector3 startPos, Vector3 edgeU, float maxDist,
+            int startTri, int entryEdge, Vector3 startPos, Vector3 edgeU,
+            float selfAngle, float minAngleRad, float maxDist,
             Vector3[] positions, int[] triV0, int[] triV1, int[] triV2, Vector3[] triNormal,
-            int[] adjTri, int[] adjEdge, float[] adjAngle,
-            float[] outDist, float[] outCumAngle,
-            int[] outCrossTri, float[] outCrossDist,
-            int[] visited, out int crossCount)
+            int[] adjTri, int[] adjEdge, float[] adjAngle, Vector3[] adjDir,
+            float[] outDist, float[] outCumAngle, Vector3[] outNorm,
+            int[] visited, out float firstBendDist)
         {
             outDist[0] = 0f;
             outCumAngle[0] = 0f;
+            outNorm[0] = triNormal[startTri];
             int bendCount = 1;
-            crossCount = 0;
+            firstBendDist = 0f;
 
             int t = startTri;
             int inEdge = entryEdge;
@@ -458,15 +567,23 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     break;
 
                 dist += bestX;
-                outCrossTri[crossCount] = t;
-                outCrossDist[crossCount] = dist;
-                crossCount++;
 
                 if (sAngle > CoplanarToleranceRad)
                 {
+                    // Crossed convex edge must belong to the same roughly parallel bevel strip.
+                    if (Mathf.Abs(Vector3.Dot(edgeU, adjDir[flatIdx])) < ParallelMinDot)
+                        break;
+                    // Do not let a weak crease piggyback on a much sharper standalone corner.
+                    if (sAngle >= minAngleRad && sAngle > MaxPiggybackRatio * selfAngle)
+                        break;
+
+                    if (firstBendDist <= 0f)
+                        firstBendDist = dist;
+
                     cumAngle += sAngle;
                     outDist[bendCount] = dist;
                     outCumAngle[bendCount] = cumAngle;
+                    outNorm[bendCount] = triNormal[nextT];
                     bendCount++;
                 }
 
@@ -477,6 +594,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             }
 
             return bendCount;
+        }
+
+        private static float Smoothstep(float edge0, float edge1, float x)
+        {
+            float t = Mathf.Clamp01((x - edge0) / Mathf.Max(edge1 - edge0, 1e-6f));
+            return t * t * (3f - 2f * t);
         }
 
         private static void GetEdgeVertices(int v0, int v1, int v2, int edge, out int from, out int to, out int opposite)
