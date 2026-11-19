@@ -1,0 +1,70 @@
+/* =====================================================================
+   Fast Curvature Baker 固有のスタイル
+   読み込み順: DennokoTheme.uss → DennokoBlocks.uss → このファイル
+   すべて .dennoko-root を前置し、色は var(--dennoko-*) だけを使う
+   ===================================================================== */
+
+/* ─── B1 対象カード: 複数の対象を並べる ─────────────────── */
+
+/* 対象 1 件の行 (ObjectField + 外すボタン)。.dennoko-target-row に足す */
+.dennoko-root .fcb-target-list > .dennoko-target-row {
+    margin-bottom: 2px;
+}
+
+.dennoko-root .fcb-target-list > .dennoko-target-row > .unity-button.dennoko-icon-button {
+    flex-shrink: 0;
+    margin-left: 4px;
+    margin-right: 0;
+}
+
+/* 対象が空のときの案内 (ドロップ先を兼ねる) */
+.dennoko-root .fcb-target-empty {
+    padding: 10px 8px;
+    margin-bottom: 4px;
+    background-color: var(--dennoko-surface-0);
+    border-width: 1px;
+    border-color: var(--dennoko-outline-subtle);
+    border-radius: 4px;
+}
+
+.dennoko-root .fcb-target-empty > .dennoko-empty-state__message {
+    margin-bottom: 0;
+}
+
+/* 選択から追加 / すべて外す の行 */
+.dennoko-root .fcb-target-actions {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 2px;
+}
+
+.dennoko-root .fcb-target-actions > .dennoko-hint {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.dennoko-root .fcb-target-actions > .unity-button {
+    flex-shrink: 0;
+    margin-right: 0;
+    margin-left: 4px;
+}
+
+/* ─── B5 出力ドック: ファイル名の見本 (伸びて、はみ出たら省略) ─── */
+.dennoko-root .fcb-output-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    -unity-text-align: middle-left;
+    color: var(--dennoko-text-tertiary);
+}
+
+/* ドラッグ中: カード全体を選択色で示す */
+.dennoko-root .dennoko-card.fcb-drop--over {
+    border-color: var(--dennoko-selection-border);
+    background-color: var(--dennoko-selection-bg);
+}

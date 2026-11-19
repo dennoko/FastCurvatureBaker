@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using UnityEditor;
@@ -10,7 +11,8 @@ using UnityEngine.UIElements;
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
     /// <summary>
-    /// dennokoworks フローティングデザインシステムに準拠した Fast Curvature Baker の UI Toolkit ウィンドウ。
+    /// Fast Curvature Baker のウィンドウ。dennokoworks デザインシステムの画面パターン P1 (変換) で組む:
+    ///   標準ヘッダー → B1 対象カード → B2 設定カード (ベイク / エッジ / 曲面) → 出力ドック → フッター → ステータス。
     /// 日本語/英語のローカライズに対応。
     /// </summary>
     public sealed class FastCurvatureBakerWindow : EditorWindow
@@ -18,263 +20,238 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private const string Title = "Fast Curvature Baker";
 
         private static string Tr(string ja, string en) => FastCurvatureBakerLoc.Tr(ja, en);
-        private static string Tr(string ja, string en, params object[] args) => FastCurvatureBakerLoc.Tr(ja, en, args);
         private static bool IsJapanese => FastCurvatureBakerLoc.IsJapanese;
 
-        private const string UXML_GUID = "0123456789abcdef0123456789abcde6";
-        private const string USS_GUID  = "e123456789abcdef0123456789abcde4";
+        // UXML / USS の GUID (.meta と一致させる)。USS はテーマ → ブロック → ツール固有の順に読む
+        private const string UXML_GUID       = "0123456789abcdef0123456789abcde6";
+        private const string USS_GUID        = "e123456789abcdef0123456789abcde4";
+        private const string BLOCKS_USS_GUID = "1e41444802ba42389462cde4cb9f129b";
+        private const string TOOL_USS_GUID   = "09531036242140308f50c205e1acc405";
 
-        public enum StatusType { Info, Success, Error }
+        private const string DropOverClass = "fcb-drop--over";
 
         [SerializeField] private List<GameObject> _targets = new List<GameObject>();
         [SerializeField] private CurvatureBakeSettings _settings = new CurvatureBakeSettings();
+        [SerializeField] private bool _advancedOpen;
 
         private CancellationTokenSource _cancellation;
         private bool IsBaking => _cancellation != null;
 
-        // UI 要素
-        private VisualElement _root;
-        private Label _versionLabel;
-        private Button _versionReloadButton;
-        private Button _langButton;
+        private DennokoAppBar _appBar;
+        private DennokoStatus _status;
+        private Label _statusLabel;
+        private string _savedStatusText;
+        private string _lastSavedPath;
 
-        private Label _targetsCardTitle;
-        private Button _addSelectedButton;
-        private Button _clearTargetsButton;
-        private VisualElement _targetsContainer;
-        private VisualElement _dropArea;
-        private Label _dropHintLabel;
+        // B1 対象カード
+        private VisualElement _targetCard;
+        private VisualElement _targetList;
+        private VisualElement _targetEmpty;
+        private Label _targetEmptyMessage;
+        private VisualElement _targetInfo;
+        private Label _targetInfoRenderers;
+        private Label _targetInfoOutputs;
+        private VisualElement _targetWarning;
+        private Label _targetWarningText;
+        private Button _targetFixButton;
+        private Label _targetHint;
+        private Button _targetClearButton;
+        private Button _targetFromSelectionButton;
+        private List<Renderer> _renderers = new List<Renderer>();
+        private List<Mesh> _unreadable = new List<Mesh>();
 
-        private Label _bakeSettingsCardTitle;
-        private EnumField _modeField;
+        // B2 ベイク
+        private Label _bakeCardTitle;
+        private Button _bakeCardReset;
+        private VisualElement _modeRow;
+        private Label _modeLabel;
+        private VisualElement _modeChoice;
+        private Action<int> _selectMode;
         private DropdownField _resolutionField;
         private DropdownField _uvChannelField;
-        private EnumField _qualityField;
+        private VisualElement _qualityRow;
+        private Label _qualityLabel;
+        private Action<int> _selectQuality;
         private Toggle _supersampleToggle;
-
-        private Label _hardEdgesCardTitle;
-        private FloatField _edgeWidthField;
-        private Slider _edgeStrengthSlider;
-        private VisualElement _sharpConvexContainer;
-        private Slider _sharpMinAngleSlider;
-        private FloatField _maxBevelWidthField;
-
-        private VisualElement _smoothSurfacesCard;
-        private Label _smoothSurfacesCardTitle;
-        private FloatField _radiusField;
-        private Slider _strengthSlider;
-        private EnumField _sourceField;
-
-        private Foldout _advancedFoldout;
+        private VisualElement _advancedDetails;
+        private Label _advancedTitle;
+        private VisualElement _advancedChips;
         private Toggle _sameComponentToggle;
         private Slider _normalRejectionSlider;
         private SliderInt _blurPassesSlider;
         private SliderInt _dilationSlider;
 
-        private Label _outputCardTitle;
-        private Toggle _overwriteToggle;
-        private Label _outputInfoLabel;
+        // B2 エッジ
+        private Label _edgeCardTitle;
+        private Button _edgeCardReset;
+        private FloatField _edgeWidthField;
+        private Slider _edgeStrengthSlider;
+        private VisualElement _sharpConvexContent;
+        private Slider _sharpMinAngleSlider;
+        private FloatField _maxBevelWidthField;
 
+        // B2 曲面
+        private VisualElement _smoothCard;
+        private Label _smoothCardTitle;
+        private Button _smoothCardReset;
+        private FloatField _radiusField;
+        private Slider _strengthSlider;
+        private VisualElement _sourceRow;
+        private Label _sourceLabel;
+        private VisualElement _sourceChoice;
+        private Action<int> _selectSource;
+
+        // B5 出力ドック + フッター
+        private Label _outputPathLabel;
+        private TextField _outputPathField;
+        private Label _outputNameLabel;
+        private Label _outputName;
+        private Toggle _overwriteToggle;
         private Button _bakeButton;
-        private Button _resetSettingsButton;
-        private Label _statusLabel;
-        private IVisualElementScheduledItem _statusResetSchedule;
 
         private DennokoVersionChecker.Result _versionResult = new DennokoVersionChecker.Result
         {
             State = DennokoVersionChecker.State.Checking,
             LocalVersion = "0.0.0"
         };
+        private Label _versionLabel;
 
         [MenuItem("dennokoworks/Fast Curvature Baker")]
         public static void Open()
         {
             var window = GetWindow<FastCurvatureBakerWindow>(Title);
             window.titleContent = new GUIContent(Title);
-            window.minSize = new Vector2(380, 540);
+            window.minSize = new Vector2(360, 480);
         }
 
         private void OnEnable()
         {
             FastCurvatureBakerLoc.OnLanguageChanged += ApplyLanguage;
+            Undo.undoRedoPerformed += OnUndoRedo;
         }
 
         private void OnDisable()
         {
             FastCurvatureBakerLoc.OnLanguageChanged -= ApplyLanguage;
+            Undo.undoRedoPerformed -= OnUndoRedo;
             _cancellation?.Cancel();
+        }
+
+        private void OnUndoRedo()
+        {
+            if (_bakeButton == null) return;
+            SyncSettingsToUI();
+            RefreshTargets();
+        }
+
+        // 対象の自動入力は「対象が空のときだけ」(blocks/cards.md B1)。指定済みの値は勝手に変えない
+        private void OnSelectionChange()
+        {
+            if (_bakeButton == null || IsBaking) return;
+            _targets.RemoveAll(t => t == null);
+            if (_targets.Count == 0 && AddGameObjects(Selection.gameObjects, "Add Targets"))
+                RefreshTargets();
         }
 
         public void CreateGUI()
         {
-            _root = rootVisualElement;
-            _root.Clear();
+            var root = rootVisualElement;
+            root.Clear();
 
-            // テーマ非依存のためのルートクラスを適用
-            _root.AddToClassList("dennoko-root");
-            _root.style.backgroundColor = (Color)new Color32(0x12, 0x12, 0x12, 0xFF);
-            _root.style.flexGrow = 1;
+            // テーマ非依存のためのルートクラス。USS ロード失敗時も背景が明るくならないよう Surface0 を保証
+            root.AddToClassList("dennoko-root");
+            root.style.backgroundColor = (Color)new Color32(0x12, 0x12, 0x12, 0xFF);
+            root.style.flexGrow = 1;
 
             // 標準フォント: OS のメイリオを全体に適用
-            DennokoUIFont.Apply(_root);
+            DennokoUIFont.Apply(root);
 
-            // USS のロードと適用
-            var uss = LoadUss();
-            if (uss != null)
-            {
-                _root.styleSheets.Add(uss);
-            }
-            else
-            {
-                Debug.LogWarning($"[{nameof(FastCurvatureBakerWindow)}] USS が見つかりません。GUID を確認してください: {USS_GUID}");
-            }
+            AddStyleSheet(root, USS_GUID, "DennokoTheme");
+            AddStyleSheet(root, BLOCKS_USS_GUID, "DennokoBlocks");
+            AddStyleSheet(root, TOOL_USS_GUID, "FastCurvatureBaker");
 
-            // UXML のロードとインスタンス化
-            var uxml = LoadUxml();
+            var uxml = LoadAsset<VisualTreeAsset>(UXML_GUID, "FastCurvatureBakerWindow t:VisualTreeAsset");
             if (uxml == null)
             {
-                _root.Add(new Label("UXML Asset が見つかりません。GUID を確認してください。"));
+                root.Add(new Label("UXML Asset が見つかりません。GUID を確認してください。"));
                 return;
             }
-            uxml.CloneTree(_root);
+            uxml.CloneTree(root);
 
-            InitializeUI(_root);
+            InitializeUI(root);
             StartVersionCheck();
         }
 
-        private static VisualTreeAsset LoadUxml()
+        private static void AddStyleSheet(VisualElement root, string guid, string fallbackName)
         {
-            string path = AssetDatabase.GUIDToAssetPath(UXML_GUID);
+            var uss = LoadAsset<StyleSheet>(guid, fallbackName + " t:StyleSheet");
+            if (uss != null) root.styleSheets.Add(uss);
+            else Debug.LogWarning($"[{nameof(FastCurvatureBakerWindow)}] USS が見つかりません。GUID を確認してください: {guid}");
+        }
+
+        /// <summary>GUID で読み、見つからなければ名前で探す (.meta を作り直されたときの保険)。</summary>
+        private static T LoadAsset<T>(string guid, string searchFilter) where T : UnityEngine.Object
+        {
+            string path = AssetDatabase.GUIDToAssetPath(guid);
             if (!string.IsNullOrEmpty(path))
             {
-                var asset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(path);
+                var asset = AssetDatabase.LoadAssetAtPath<T>(path);
                 if (asset != null) return asset;
             }
-
-            var guids = AssetDatabase.FindAssets("FastCurvatureBakerWindow t:VisualTreeAsset");
-            foreach (var g in guids)
+            foreach (var g in AssetDatabase.FindAssets(searchFilter))
             {
-                var p = AssetDatabase.GUIDToAssetPath(g);
-                var asset = AssetDatabase.LoadAssetAtPath<VisualTreeAsset>(p);
+                var asset = AssetDatabase.LoadAssetAtPath<T>(AssetDatabase.GUIDToAssetPath(g));
                 if (asset != null) return asset;
             }
             return null;
         }
 
-        private static StyleSheet LoadUss()
-        {
-            string path = AssetDatabase.GUIDToAssetPath(USS_GUID);
-            if (!string.IsNullOrEmpty(path))
-            {
-                var asset = AssetDatabase.LoadAssetAtPath<StyleSheet>(path);
-                if (asset != null) return asset;
-            }
-
-            var guids = AssetDatabase.FindAssets("DennokoTheme t:StyleSheet");
-            foreach (var g in guids)
-            {
-                var p = AssetDatabase.GUIDToAssetPath(g);
-                var asset = AssetDatabase.LoadAssetAtPath<StyleSheet>(p);
-                if (asset != null) return asset;
-            }
-            return null;
-        }
+        // ─── バインディング ─────────────────────────────────────────────
 
         private void InitializeUI(VisualElement root)
         {
+            // 標準フッターのステータスバー。保存の表示をクリックすると保存したテクスチャを Ping する
             _statusLabel = root.Q<Label>("status-label");
-
-            // 言語切替ボタン
-            _langButton = root.Q<Button>("lang-button");
-            if (_langButton != null)
+            _status = new DennokoStatus(_statusLabel);
+            _statusLabel?.RegisterCallback<ClickEvent>(_ =>
             {
-                _langButton.clicked += FastCurvatureBakerLoc.ToggleLanguage;
-            }
+                if (_statusLabel.text != _savedStatusText || string.IsNullOrEmpty(_lastSavedPath)) return;
+                var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(_lastSavedPath);
+                if (tex != null) EditorGUIUtility.PingObject(tex);
+            });
 
-            // バージョン表示関連
+            // 標準ヘッダー
             _versionLabel = root.Q<Label>("version-label");
-            _versionReloadButton = root.Q<Button>("version-reload-button");
-            if (_versionReloadButton != null)
+            _appBar = new DennokoAppBar(root, Title, english: !IsJapanese)
             {
-                _versionReloadButton.clicked += () =>
-                {
-                    FastCurvatureBakerVersion.ForceRecheck();
-                    LoadVersionResultFromSessionState();
-                };
-            }
-
-            // ターゲット管理関連
-            _targetsCardTitle = root.Q<Label>("targets-card-title");
-            _targetsContainer = root.Q<VisualElement>("targets-container");
-            _dropArea = root.Q<VisualElement>("drop-area");
-            _dropHintLabel = root.Q<Label>("drop-hint-label");
-            _addSelectedButton = root.Q<Button>("add-selected-button");
-            _clearTargetsButton = root.Q<Button>("clear-targets-button");
-
-            if (_addSelectedButton != null)
-                _addSelectedButton.clicked += AddSelection;
-
-            if (_clearTargetsButton != null)
+                ManualUrl = ResolveManualUrl(),
+                ResetAll = ResetAllSettings,
+            };
+            _appBar.LanguageChanged += english =>
+                FastCurvatureBakerLoc.CurrentLanguage = english
+                    ? FastCurvatureBakerLanguage.English
+                    : FastCurvatureBakerLanguage.Japanese;
+            _appBar.CheckUpdateRequested += () =>
             {
-                _clearTargetsButton.clicked += () =>
-                {
-                    Undo.RecordObject(this, "Clear Targets");
-                    _targets.Clear();
-                    RefreshTargetsList();
-                };
-            }
+                FastCurvatureBakerVersion.ForceRecheck();
+                LoadVersionResultFromSessionState();
+            };
 
-            SetupDropArea(_dropArea);
-            RefreshTargetsList();
+            InitializeTargetCard(root);
+            InitializeSettingsCards(root);
 
-            // 設定フィールド
-            _bakeSettingsCardTitle = root.Q<Label>("bake-settings-card-title");
-            _modeField = root.Q<EnumField>("mode-field");
-            _resolutionField = root.Q<DropdownField>("resolution-field");
-            _uvChannelField = root.Q<DropdownField>("uv-channel-field");
-            _qualityField = root.Q<EnumField>("quality-field");
-            _supersampleToggle = root.Q<Toggle>("supersample-toggle");
-
-            _hardEdgesCardTitle = root.Q<Label>("hard-edges-card-title");
-            _edgeWidthField = root.Q<FloatField>("edge-width-field");
-            _edgeStrengthSlider = root.Q<Slider>("edge-strength-slider");
-            _sharpConvexContainer = root.Q<VisualElement>("sharp-convex-container");
-            _sharpMinAngleSlider = root.Q<Slider>("sharp-min-angle-slider");
-            _maxBevelWidthField = root.Q<FloatField>("max-bevel-width-field");
-
-            _smoothSurfacesCard = root.Q<VisualElement>("smooth-surfaces-card");
-            _smoothSurfacesCardTitle = root.Q<Label>("smooth-surfaces-card-title");
-            _radiusField = root.Q<FloatField>("radius-field");
-            _strengthSlider = root.Q<Slider>("strength-slider");
-            _sourceField = root.Q<EnumField>("source-field");
-
-            _advancedFoldout = root.Q<Foldout>("advanced-foldout");
-            _sameComponentToggle = root.Q<Toggle>("same-component-toggle");
-            _normalRejectionSlider = root.Q<Slider>("normal-rejection-slider");
-            _blurPassesSlider = root.Q<SliderInt>("blur-passes-slider");
-            _dilationSlider = root.Q<SliderInt>("dilation-slider");
-
-            _outputCardTitle = root.Q<Label>("output-card-title");
+            // 出力ドック + フッター
+            _outputPathLabel = root.Q<Label>("output-path-label");
+            _outputPathField = root.Q<TextField>("output-path");
+            _outputNameLabel = root.Q<Label>("output-name-label");
+            _outputName = root.Q<Label>("output-name");
             _overwriteToggle = root.Q<Toggle>("overwrite-toggle");
-            _outputInfoLabel = root.Q<Label>("output-info-label");
-
-            // アクションボタン
             _bakeButton = root.Q<Button>("bake-button");
-            _resetSettingsButton = root.Q<Button>("reset-settings-button");
+            if (_bakeButton != null) _bakeButton.clicked += Bake;
 
-            if (_bakeButton != null)
-                _bakeButton.clicked += Bake;
-
-            if (_resetSettingsButton != null)
-            {
-                _resetSettingsButton.clicked += () =>
-                {
-                    Undo.RecordObject(this, "Reset Curvature Bake Settings");
-                    _settings = new CurvatureBakeSettings();
-                    SyncSettingsToUI();
-                    SetStatus(Tr("設定を初期値にリセットしました。", "Settings reset to default."), StatusType.Info);
-                };
-            }
+            // 開いたときに対象が空なら、Hierarchy の選択で埋める
+            _targets.RemoveAll(t => t == null);
+            if (_targets.Count == 0) AddGameObjects(Selection.gameObjects, null);
 
             SetupDropdownChoices();
             SyncSettingsToUI();
@@ -282,214 +259,299 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             ApplyLanguage();
         }
 
+        private void InitializeTargetCard(VisualElement root)
+        {
+            _targetCard = root.Q<VisualElement>("target-card");
+            _targetList = root.Q<VisualElement>("target-list");
+            _targetEmpty = root.Q<VisualElement>("target-empty");
+            _targetEmptyMessage = root.Q<Label>("target-empty-message");
+            _targetInfo = root.Q<VisualElement>("target-info");
+            _targetInfoRenderers = root.Q<Label>("target-info-renderers");
+            _targetInfoOutputs = root.Q<Label>("target-info-outputs");
+            _targetWarning = root.Q<VisualElement>("target-warning");
+            _targetWarningText = root.Q<Label>("target-warning-text");
+            _targetFixButton = root.Q<Button>("target-fix");
+            _targetHint = root.Q<Label>("target-hint");
+            _targetClearButton = root.Q<Button>("target-clear");
+            _targetFromSelectionButton = root.Q<Button>("target-from-selection");
+
+            if (_targetFromSelectionButton != null)
+            {
+                _targetFromSelectionButton.clicked += () =>
+                {
+                    if (AddGameObjects(Selection.gameObjects, "Add Targets"))
+                        RefreshTargets();
+                    else
+                        _status.Set(Tr("Hierarchy で GameObject を選んでください。", "Select GameObjects in the Hierarchy."), DennokoStatusType.Warning);
+                };
+            }
+
+            if (_targetClearButton != null)
+            {
+                _targetClearButton.clicked += () =>
+                {
+                    Undo.RecordObject(this, "Clear Targets");
+                    _targets.Clear();
+                    RefreshTargets();
+                };
+            }
+
+            if (_targetFixButton != null)
+            {
+                _targetFixButton.clicked += () =>
+                {
+                    List<Mesh> failed = MeshReadabilityUtility.EnableReadWrite(_unreadable);
+                    RefreshTargets();
+                    if (failed.Count == 0)
+                        _status.Set(Tr("Read/Write を有効にしました。", "Read/Write enabled."), DennokoStatusType.Success);
+                    else
+                        _status.Set(Tr($"{failed.Count} 個のメッシュは Read/Write を変更できません (モデル以外のメッシュ)。",
+                                       $"Could not enable Read/Write for {failed.Count} mesh(es) (not imported from a model)."),
+                                    DennokoStatusType.Error);
+                };
+            }
+
+            SetupDropTarget(_targetCard);
+        }
+
+        private void InitializeSettingsCards(VisualElement root)
+        {
+            // ベイク
+            _bakeCardTitle = root.Q<Label>("bake-card-title");
+            _bakeCardReset = root.Q<Button>("bake-card-reset");
+            _modeRow = root.Q<VisualElement>("mode-row");
+            _modeLabel = root.Q<Label>("mode-label");
+            _modeChoice = root.Q<VisualElement>("mode-choice");
+            _resolutionField = root.Q<DropdownField>("resolution-field");
+            _uvChannelField = root.Q<DropdownField>("uv-channel-field");
+            _qualityRow = root.Q<VisualElement>("quality-row");
+            _qualityLabel = root.Q<Label>("quality-label");
+            _supersampleToggle = root.Q<Toggle>("supersample-toggle");
+            _advancedDetails = root.Q<VisualElement>("advanced-details");
+            _advancedTitle = root.Q<Label>("advanced-title");
+            _advancedChips = root.Q<VisualElement>("advanced-chips");
+            _sameComponentToggle = root.Q<Toggle>("same-component-toggle");
+            _normalRejectionSlider = root.Q<Slider>("normal-rejection-slider");
+            _blurPassesSlider = root.Q<SliderInt>("blur-passes-slider");
+            _dilationSlider = root.Q<SliderInt>("dilation-slider");
+
+            _selectMode = DennokoBlockUI.BindChoice(_modeChoice, (int)_settings.Mode, index =>
+            {
+                Undo.RecordObject(this, "Change Mode");
+                _settings.Mode = (CurvatureBakeMode)index;
+                UpdateModeVisibility();
+                RefreshOutputDock();
+            });
+            _selectQuality = DennokoBlockUI.BindChoice(root.Q<VisualElement>("quality-choice"), (int)_settings.Quality, index =>
+            {
+                Undo.RecordObject(this, "Change Quality");
+                _settings.Quality = (BakeQuality)index;
+            });
+            DennokoBlockUI.BindDetails(_advancedDetails, _advancedOpen, open => _advancedOpen = open);
+
+            // エッジ
+            _edgeCardTitle = root.Q<Label>("edge-card-title");
+            _edgeCardReset = root.Q<Button>("edge-card-reset");
+            _edgeWidthField = root.Q<FloatField>("edge-width-field");
+            _edgeStrengthSlider = root.Q<Slider>("edge-strength-slider");
+            _sharpConvexContent = root.Q<VisualElement>("sharp-convex-content");
+            _sharpMinAngleSlider = root.Q<Slider>("sharp-min-angle-slider");
+            _maxBevelWidthField = root.Q<FloatField>("max-bevel-width-field");
+
+            // 曲面
+            _smoothCard = root.Q<VisualElement>("smooth-card");
+            _smoothCardTitle = root.Q<Label>("smooth-card-title");
+            _smoothCardReset = root.Q<Button>("smooth-card-reset");
+            _radiusField = root.Q<FloatField>("radius-field");
+            _strengthSlider = root.Q<Slider>("strength-slider");
+            _sourceRow = root.Q<VisualElement>("source-row");
+            _sourceLabel = root.Q<Label>("source-label");
+            _sourceChoice = root.Q<VisualElement>("source-choice");
+            _selectSource = DennokoBlockUI.BindChoice(_sourceChoice, (int)_settings.Source, index =>
+            {
+                Undo.RecordObject(this, "Change Source");
+                _settings.Source = (CurvatureSource)index;
+            });
+
+            // カード見出しの ↺: そのカードだけを初期値に戻す (Undo で戻せるので確認なし)
+            BindCardReset(_bakeCardReset, "Reset Bake Settings", d =>
+            {
+                _settings.Mode = d.Mode;
+                _settings.Resolution = d.Resolution;
+                _settings.UVChannel = d.UVChannel;
+                _settings.Quality = d.Quality;
+                _settings.Supersample = d.Supersample;
+                _settings.SameComponentOnly = d.SameComponentOnly;
+                _settings.NormalRejection = d.NormalRejection;
+                _settings.BlurPasses = d.BlurPasses;
+                _settings.DilationPixels = d.DilationPixels;
+            });
+            BindCardReset(_edgeCardReset, "Reset Edge Settings", d =>
+            {
+                _settings.EdgeWidth = d.EdgeWidth;
+                _settings.EdgeStrength = d.EdgeStrength;
+                _settings.SharpMinAngle = d.SharpMinAngle;
+                _settings.MaxBevelWidth = d.MaxBevelWidth;
+            });
+            BindCardReset(_smoothCardReset, "Reset Smooth Surface Settings", d =>
+            {
+                _settings.Radius = d.Radius;
+                _settings.Strength = d.Strength;
+                _settings.Source = d.Source;
+            });
+        }
+
+        private void BindCardReset(Button button, string undoName, Action<CurvatureBakeSettings> reset)
+        {
+            if (button == null) return;
+            DennokoIcons.Apply(button, DennokoIcons.Refresh, "↺");
+            button.clicked += () =>
+            {
+                Undo.RecordObject(this, undoName);
+                reset(new CurvatureBakeSettings());
+                SyncSettingsToUI();
+                _status.Set(Tr("このカードを初期値に戻しました。", "Card reset to defaults."));
+            };
+        }
+
+        /// <summary>⋮「設定を初期値に戻す…」(確認ダイアログは DennokoAppBar が出す)。対象は残す。</summary>
+        private void ResetAllSettings()
+        {
+            Undo.RecordObject(this, "Reset Curvature Bake Settings");
+            _settings = new CurvatureBakeSettings();
+            SyncSettingsToUI();
+            _status.Set(Tr("設定を初期値に戻しました。", "Settings reset to default."));
+        }
+
+        /// <summary>マニュアル (?) はパッケージ同梱の Docs/user_manual_*.pdf を開く。GitHub には直接つながない。</summary>
+        private static string ResolveManualUrl()
+        {
+            string uxmlPath = AssetDatabase.GUIDToAssetPath(UXML_GUID);
+            if (string.IsNullOrEmpty(uxmlPath)) return null;
+
+            // <ツール>/Editor/UI/FastCurvatureBakerWindow.uxml → <ツール>/Docs/
+            string toolRoot = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(uxmlPath)));
+            if (string.IsNullOrEmpty(toolRoot)) return null;
+            string file = Path.Combine(toolRoot, "Docs", IsJapanese ? "user_manual_ja.pdf" : "user_manual_en.pdf");
+            if (!File.Exists(file)) return null;
+            return "file:///" + Path.GetFullPath(file).Replace('\\', '/');
+        }
+
         private void SetupDropdownChoices()
         {
             if (_resolutionField != null)
-            {
-                _resolutionField.choices = CurvatureBakeSettings.SupportedResolutions
-                    .Select(r => r.ToString())
-                    .ToList();
-            }
-
+                _resolutionField.choices = CurvatureBakeSettings.SupportedResolutions.Select(r => r.ToString()).ToList();
             if (_uvChannelField != null)
-            {
-                _uvChannelField.choices = Enumerable.Range(0, 8)
-                    .Select(i => $"UV{i}")
-                    .ToList();
-            }
+                _uvChannelField.choices = Enumerable.Range(0, 8).Select(i => $"UV{i}").ToList();
         }
 
+        /// <summary>設定値を UI に書き戻す (コールバックは呼ばない)。</summary>
         private void SyncSettingsToUI()
         {
             _settings.Validate();
 
-            if (_modeField != null)
-                _modeField.Init(_settings.Mode);
+            _selectMode?.Invoke((int)_settings.Mode);
+            _resolutionField?.SetValueWithoutNotify(_settings.Resolution.ToString());
+            _uvChannelField?.SetValueWithoutNotify($"UV{_settings.UVChannel}");
+            _selectQuality?.Invoke((int)_settings.Quality);
+            _supersampleToggle?.SetValueWithoutNotify(_settings.Supersample);
+            _sameComponentToggle?.SetValueWithoutNotify(_settings.SameComponentOnly);
+            _normalRejectionSlider?.SetValueWithoutNotify(_settings.NormalRejection);
+            _blurPassesSlider?.SetValueWithoutNotify(_settings.BlurPasses);
+            _dilationSlider?.SetValueWithoutNotify(_settings.DilationPixels);
 
-            if (_resolutionField != null)
-                _resolutionField.value = _settings.Resolution.ToString();
+            _edgeWidthField?.SetValueWithoutNotify(_settings.EdgeWidth);
+            _edgeStrengthSlider?.SetValueWithoutNotify(_settings.EdgeStrength);
+            _sharpMinAngleSlider?.SetValueWithoutNotify(_settings.SharpMinAngle);
+            _maxBevelWidthField?.SetValueWithoutNotify(_settings.MaxBevelWidth);
 
-            if (_uvChannelField != null)
-                _uvChannelField.value = $"UV{_settings.UVChannel}";
+            _radiusField?.SetValueWithoutNotify(_settings.Radius);
+            _strengthSlider?.SetValueWithoutNotify(_settings.Strength);
+            _selectSource?.Invoke((int)_settings.Source);
 
-            if (_qualityField != null)
-                _qualityField.Init(_settings.Quality);
-
-            if (_supersampleToggle != null)
-                _supersampleToggle.value = _settings.Supersample;
-
-            if (_edgeWidthField != null)
-                _edgeWidthField.value = _settings.EdgeWidth;
-
-            if (_edgeStrengthSlider != null)
-                _edgeStrengthSlider.value = _settings.EdgeStrength;
-
-            if (_sharpMinAngleSlider != null)
-                _sharpMinAngleSlider.value = _settings.SharpMinAngle;
-
-            if (_maxBevelWidthField != null)
-                _maxBevelWidthField.value = _settings.MaxBevelWidth;
-
-            if (_radiusField != null)
-                _radiusField.value = _settings.Radius;
-
-            if (_strengthSlider != null)
-                _strengthSlider.value = _settings.Strength;
-
-            if (_sourceField != null)
-                _sourceField.Init(_settings.Source);
-
-            if (_sameComponentToggle != null)
-                _sameComponentToggle.value = _settings.SameComponentOnly;
-
-            if (_normalRejectionSlider != null)
-                _normalRejectionSlider.value = _settings.NormalRejection;
-
-            if (_blurPassesSlider != null)
-                _blurPassesSlider.value = _settings.BlurPasses;
-
-            if (_dilationSlider != null)
-                _dilationSlider.value = _settings.DilationPixels;
-
-            if (_overwriteToggle != null)
-                _overwriteToggle.value = _settings.OverwriteExisting;
+            _overwriteToggle?.SetValueWithoutNotify(_settings.OverwriteExisting);
 
             UpdateModeVisibility();
+            RefreshAdvancedChips();
+            RefreshOutputDock();
         }
 
         private void UpdateModeVisibility()
         {
             bool isSharp = _settings.Mode == CurvatureBakeMode.SharpConvex;
-            if (_sharpConvexContainer != null)
-                _sharpConvexContainer.style.display = isSharp ? DisplayStyle.Flex : DisplayStyle.None;
-            if (_smoothSurfacesCard != null)
-                _smoothSurfacesCard.style.display = isSharp ? DisplayStyle.None : DisplayStyle.Flex;
+            DennokoBlockUI.Show(_sharpConvexContent, isSharp);
+            DennokoBlockUI.Show(_smoothCard, !isSharp);
 
-            if (_hardEdgesCardTitle != null)
-            {
-                _hardEdgesCardTitle.text = isSharp
-                    ? Tr("シャープ凸エッジ / 狭ベベル検出", "SHARP CONVEX / NARROW BEVEL")
-                    : Tr("ハードエッジ (エッジ検出)", "HARD EDGES (Edge Detection)");
-            }
+            if (_edgeCardTitle != null)
+                _edgeCardTitle.text = isSharp
+                    ? Tr("シャープ凸エッジ / 狭ベベル", "SHARP CONVEX / NARROW BEVEL")
+                    : Tr("ハードエッジ", "HARD EDGES");
             if (_edgeWidthField != null)
-            {
-                _edgeWidthField.label = isSharp
-                    ? Tr("マスク幅 (m)", "Mask Width (m)")
-                    : Tr("エッジ幅 (m)", "Edge Width (m)");
-            }
+                _edgeWidthField.label = isSharp ? Tr("マスク幅 (m)", "Mask Width (m)") : Tr("エッジ幅 (m)", "Edge Width (m)");
+        }
+
+        /// <summary>「詳細」を閉じている間、初期値と違う項目だけをチップで見出し行に並べる。</summary>
+        private void RefreshAdvancedChips()
+        {
+            if (_advancedChips == null) return;
+            _advancedChips.Clear();
+            var d = new CurvatureBakeSettings();
+
+            void Add(string text) => _advancedChips.Add(DennokoBlockUI.Chip(null, text));
+
+            if (_settings.SameComponentOnly != d.SameComponentOnly)
+                Add(_settings.SameComponentOnly ? Tr("同一パーツのみ", "Same part") : Tr("全パーツ参照", "All parts"));
+            if (!Mathf.Approximately(_settings.NormalRejection, d.NormalRejection))
+                Add(Tr("法線 ", "Normal ") + _settings.NormalRejection.ToString("0.##"));
+            if (_settings.BlurPasses != d.BlurPasses)
+                Add(Tr("ブラー ", "Blur ") + _settings.BlurPasses);
+            if (_settings.DilationPixels != d.DilationPixels)
+                Add(Tr("拡張 ", "Dilation ") + _settings.DilationPixels + "px");
         }
 
         private void BindSettingsEvents()
         {
-            _modeField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Mode");
-                _settings.Mode = (CurvatureBakeMode)evt.newValue;
-                UpdateModeVisibility();
-            });
-
             _resolutionField?.RegisterValueChangedCallback(evt =>
             {
-                if (int.TryParse(evt.newValue, out int r))
-                {
-                    Undo.RecordObject(this, "Change Resolution");
-                    _settings.Resolution = r;
-                    _settings.Validate();
-                }
+                if (!int.TryParse(evt.newValue, out int r)) return;
+                Undo.RecordObject(this, "Change Resolution");
+                _settings.Resolution = r;
+                _settings.Validate();
             });
 
             _uvChannelField?.RegisterValueChangedCallback(evt =>
             {
-                if (evt.newValue != null && evt.newValue.StartsWith("UV") &&
-                    int.TryParse(evt.newValue.Substring(2), out int uv))
-                {
-                    Undo.RecordObject(this, "Change UV Channel");
-                    _settings.UVChannel = uv;
-                }
+                if (evt.newValue == null || !evt.newValue.StartsWith("UV") ||
+                    !int.TryParse(evt.newValue.Substring(2), out int uv)) return;
+                Undo.RecordObject(this, "Change UV Channel");
+                _settings.UVChannel = uv;
             });
 
-            _qualityField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Quality");
-                _settings.Quality = (BakeQuality)evt.newValue;
-            });
+            Bind(_supersampleToggle, "Change Supersample", v => _settings.Supersample = v);
+            Bind(_sameComponentToggle, "Change Same Component", v => _settings.SameComponentOnly = v, RefreshAdvancedChips);
+            Bind(_normalRejectionSlider, "Change Normal Rejection",
+                 v => _settings.NormalRejection = Mathf.Clamp(v, -1f, CurvatureBakeSettings.MaxNormalRejection), RefreshAdvancedChips);
+            Bind(_blurPassesSlider, "Change Blur Passes", v => _settings.BlurPasses = Mathf.Clamp(v, 0, 16), RefreshAdvancedChips);
+            Bind(_dilationSlider, "Change Dilation", v => _settings.DilationPixels = Mathf.Clamp(v, 0, 64), RefreshAdvancedChips);
 
-            _supersampleToggle?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Supersample");
-                _settings.Supersample = evt.newValue;
-            });
+            Bind(_edgeWidthField, "Change Edge Width", v => _settings.EdgeWidth = Mathf.Max(v, 1e-5f));
+            Bind(_edgeStrengthSlider, "Change Edge Strength", v => _settings.EdgeStrength = Mathf.Max(v, 0f));
+            Bind(_sharpMinAngleSlider, "Change Sharp Min Angle", v => _settings.SharpMinAngle = Mathf.Clamp(v, 5f, 150f));
+            Bind(_maxBevelWidthField, "Change Max Bevel Width", v => _settings.MaxBevelWidth = Mathf.Clamp(v, 0f, 0.05f));
 
-            _edgeWidthField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Edge Width");
-                _settings.EdgeWidth = Mathf.Max(evt.newValue, 1e-5f);
-            });
+            Bind(_radiusField, "Change Radius", v => _settings.Radius = Mathf.Max(v, 1e-5f));
+            Bind(_strengthSlider, "Change Strength", v => _settings.Strength = Mathf.Max(v, 0f));
 
-            _edgeStrengthSlider?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Edge Strength");
-                _settings.EdgeStrength = Mathf.Max(evt.newValue, 0f);
-            });
+            Bind(_overwriteToggle, "Change Overwrite", v => _settings.OverwriteExisting = v);
+        }
 
-            _sharpMinAngleSlider?.RegisterValueChangedCallback(evt =>
+        private void Bind<T>(INotifyValueChanged<T> field, string undoName, Action<T> apply, Action after = null)
+        {
+            field?.RegisterValueChangedCallback(evt =>
             {
-                Undo.RecordObject(this, "Change Sharp Min Angle");
-                _settings.SharpMinAngle = Mathf.Clamp(evt.newValue, 5f, 150f);
-            });
-
-            _maxBevelWidthField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Max Bevel Width");
-                _settings.MaxBevelWidth = Mathf.Clamp(evt.newValue, 0f, 0.05f);
-            });
-
-            _radiusField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Radius");
-                _settings.Radius = Mathf.Max(evt.newValue, 1e-5f);
-            });
-
-            _strengthSlider?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Strength");
-                _settings.Strength = Mathf.Max(evt.newValue, 0f);
-            });
-
-            _sourceField?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Source");
-                _settings.Source = (CurvatureSource)evt.newValue;
-            });
-
-            _sameComponentToggle?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Same Component");
-                _settings.SameComponentOnly = evt.newValue;
-            });
-
-            _normalRejectionSlider?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Normal Rejection");
-                _settings.NormalRejection = Mathf.Clamp(evt.newValue, -1f, CurvatureBakeSettings.MaxNormalRejection);
-            });
-
-            _blurPassesSlider?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Blur Passes");
-                _settings.BlurPasses = Mathf.Clamp(evt.newValue, 0, 16);
-            });
-
-            _dilationSlider?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Dilation");
-                _settings.DilationPixels = Mathf.Clamp(evt.newValue, 0, 64);
-            });
-
-            _overwriteToggle?.RegisterValueChangedCallback(evt =>
-            {
-                Undo.RecordObject(this, "Change Overwrite");
-                _settings.OverwriteExisting = evt.newValue;
+                Undo.RecordObject(this, undoName);
+                apply(evt.newValue);
+                after?.Invoke();
             });
         }
 
@@ -497,63 +559,78 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         private void ApplyLanguage()
         {
-            if (_langButton != null)
-            {
-                _langButton.text = IsJapanese ? "EN" : "JA";
-                _langButton.tooltip = Tr("英語表示に切り替えます", "Switch to Japanese");
-            }
+            if (_bakeButton == null) return;
 
-            if (_versionReloadButton != null)
-            {
-                _versionReloadButton.tooltip = Tr("アップデートを再確認", "Recheck for updates");
-            }
+            if (_appBar != null) _appBar.ManualUrl = ResolveManualUrl();
 
-            // セクションタイトル
-            if (_targetsCardTitle != null) _targetsCardTitle.text = Tr("対象オブジェクト", "TARGET OBJECTS");
-            if (_addSelectedButton != null) _addSelectedButton.text = Tr("選択中を追加", "Add Selected");
-            if (_clearTargetsButton != null) _clearTargetsButton.text = Tr("クリア", "Clear");
-            if (_dropHintLabel != null) _dropHintLabel.text = Tr("GameObject をドラッグ＆ドロップして追加", "Drag & Drop GameObjects here");
+            // B1 対象カード
+            SetText(_targetEmptyMessage, Tr("ベイクする GameObject をここへドラッグ＆ドロップ", "Drag & drop GameObjects to bake here"));
+            SetText(_targetWarningText, Tr("Read/Write が無効なメッシュがあります", "Some meshes have Read/Write disabled"));
+            SetText(_targetFixButton, Tr("有効にする", "Enable"));
+            SetText(_targetHint, Tr("子の Renderer もまとめてベイクします", "Child renderers are baked too"));
+            SetText(_targetClearButton, Tr("すべて外す", "Clear"));
+            SetText(_targetFromSelectionButton, Tr("選択から追加", "Add Selected"));
+            if (_targetFromSelectionButton != null)
+                _targetFromSelectionButton.tooltip = Tr("Hierarchy で選択中の GameObject を対象に追加します", "Add the GameObjects selected in the Hierarchy");
+            if (_targetClearButton != null)
+                _targetClearButton.tooltip = Tr("対象をすべて一覧から外します", "Remove all targets from the list");
 
-            if (_bakeSettingsCardTitle != null) _bakeSettingsCardTitle.text = Tr("ベイク基本設定", "BAKE SETTINGS");
-            if (_modeField != null) _modeField.label = Tr("ベイクモード", "Bake Mode");
+            // B2 ベイク
+            SetText(_bakeCardTitle, Tr("ベイク", "BAKE"));
+            SetText(_modeLabel, Tr("モード", "Mode"));
+            SetChoiceTexts(_modeChoice, IsJapanese
+                ? new[] { "符号付き", "凸", "凹", "シャープ凸" }
+                : new[] { "Signed", "Convex", "Concave", "Sharp" });
             if (_resolutionField != null) _resolutionField.label = Tr("解像度", "Resolution");
-            if (_uvChannelField != null) _uvChannelField.label = Tr("UVチャンネル", "UV Channel");
-            if (_qualityField != null) _qualityField.label = Tr("品質", "Quality");
-            if (_supersampleToggle != null) _supersampleToggle.label = Tr("スーパーサンプリング 2x", "Supersample 2x");
+            if (_uvChannelField != null) _uvChannelField.label = Tr("UV チャンネル", "UV Channel");
+            SetText(_qualityLabel, Tr("品質", "Quality"));
+            if (_supersampleToggle != null) _supersampleToggle.text = Tr("スーパーサンプリング 2x", "Supersample 2x");
+            SetText(_advancedTitle, Tr("詳細", "Advanced"));
+            if (_sameComponentToggle != null) _sameComponentToggle.text = Tr("同一接続パーツのみ", "Same Part Only");
+            if (_normalRejectionSlider != null) _normalRejectionSlider.label = Tr("法線拒絶しきい値", "Normal Rejection");
+            if (_blurPassesSlider != null) _blurPassesSlider.label = Tr("ブラー反復回数", "Blur Passes");
+            if (_dilationSlider != null) _dilationSlider.label = Tr("ピクセル拡張幅 (px)", "Dilation (px)");
 
+            // B2 エッジ (見出しとエッジ幅のラベルはモードで変わる)
             if (_edgeStrengthSlider != null) _edgeStrengthSlider.label = Tr("エッジ強度", "Edge Strength");
             if (_sharpMinAngleSlider != null) _sharpMinAngleSlider.label = Tr("最小角角度 (°)", "Min Corner Angle (°)");
             if (_maxBevelWidthField != null) _maxBevelWidthField.label = Tr("最大ベベル幅 (m)", "Max Bevel Width (m)");
             UpdateModeVisibility();
 
-            if (_smoothSurfacesCardTitle != null) _smoothSurfacesCardTitle.text = Tr("曲面設定 (曲面検出)", "SMOOTH SURFACES (Curvature)");
+            // B2 曲面
+            SetText(_smoothCardTitle, Tr("曲面", "SMOOTH SURFACES"));
             if (_radiusField != null) _radiusField.label = Tr("曲面計測半径 (m)", "Radius (m)");
             if (_strengthSlider != null) _strengthSlider.label = Tr("曲面強度", "Strength");
-            if (_sourceField != null) _sourceField.label = Tr("計算ソース", "Source");
+            SetText(_sourceLabel, Tr("計算ソース", "Source"));
+            SetChoiceTexts(_sourceChoice, IsJapanese
+                ? new[] { "シェーディング法線", "ジオメトリ" }
+                : new[] { "Shading Normals", "Geometry" });
 
-            if (_advancedFoldout != null) _advancedFoldout.text = Tr("詳細設定", "ADVANCED");
-            if (_sameComponentToggle != null) _sameComponentToggle.label = Tr("同一接続パーツのみ", "Same Part Only");
-            if (_normalRejectionSlider != null) _normalRejectionSlider.label = Tr("法線拒絶しきい値", "Normal Rejection");
-            if (_blurPassesSlider != null) _blurPassesSlider.label = Tr("ブラー反復回数", "Blur Passes");
-            if (_dilationSlider != null) _dilationSlider.label = Tr("ピクセル拡張幅 (px)", "Dilation (px)");
+            foreach (var reset in new[] { _bakeCardReset, _edgeCardReset, _smoothCardReset })
+                if (reset != null) reset.tooltip = Tr("このカードを初期値に戻す", "Reset this card to defaults");
 
-            if (_outputCardTitle != null) _outputCardTitle.text = Tr("出力設定", "OUTPUT SETTINGS");
-            if (_overwriteToggle != null) _overwriteToggle.label = Tr("同名ファイルを上書き保存する", "Overwrite Existing Files");
-            if (_outputInfoLabel != null)
-            {
-                _outputInfoLabel.text = Tr(
-                    $"出力先: <ベーステクスチャのフォルダ>/{CurvatureTextureExporter.OutputFolderName}/ (テクスチャがない場合は {CurvatureTextureExporter.FallbackFolder}/)",
-                    $"Output: <base texture folder>/{CurvatureTextureExporter.OutputFolderName}/ (or {CurvatureTextureExporter.FallbackFolder}/ if no texture)");
-            }
-
-            if (_bakeButton != null)
-                _bakeButton.text = IsBaking ? Tr("ベイク中...", "Baking...") : Tr("曲率テクスチャをベイク", "Bake Curvature");
-            if (_resetSettingsButton != null)
-                _resetSettingsButton.text = Tr("設定を初期値にリセット", "Reset Settings");
+            // 出力ドック + フッター
+            SetText(_outputPathLabel, Tr("出力先", "Output"));
+            SetText(_outputNameLabel, Tr("名前", "Name"));
+            if (_overwriteToggle != null) _overwriteToggle.text = Tr("上書き", "Overwrite");
 
             SetupPropertyExplanations();
             ApplyVersionLabel();
-            RefreshTargetsList();
+            RefreshAdvancedChips();
+            RefreshTargets();
+        }
+
+        private static void SetText(TextElement element, string text)
+        {
+            if (element != null) element.text = text;
+        }
+
+        private static void SetChoiceTexts(VisualElement group, string[] texts)
+        {
+            if (group == null) return;
+            var buttons = group.Children().OfType<Button>().ToArray();
+            for (int i = 0; i < buttons.Length && i < texts.Length; i++)
+                buttons[i].text = texts[i];
         }
 
         // ─── 項目解説 (Hover / Guide) ────────────────────────────────────────
@@ -568,7 +645,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         private void SetupPropertyExplanations()
         {
-            AttachExplanation(_modeField, new PropertyExplanation
+            AttachExplanation(_modeRow, new PropertyExplanation
             {
                 Name = Tr("Bake Mode (ベイクモード)", "Bake Mode"),
                 Description = Tr(
@@ -606,7 +683,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 DecreaseImpact = ""
             });
 
-            AttachExplanation(_qualityField, new PropertyExplanation
+            AttachExplanation(_qualityRow, new PropertyExplanation
             {
                 Name = Tr("Quality (サンプリング品質)", "Quality"),
                 Description = Tr(
@@ -718,7 +795,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     "[Decrease ▼] Produces milder, subtle gradients.")
             });
 
-            AttachExplanation(_sourceField, new PropertyExplanation
+            AttachExplanation(_sourceRow, new PropertyExplanation
             {
                 Name = Tr("Source (曲率計算ソース)", "Source"),
                 Description = Tr(
@@ -816,113 +893,151 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             element.tooltip = fullTooltip;
         }
 
-        // ─── ターゲット管理 (Targets) ───────────────────────────────────────
+        // ─── B1 対象カード ─────────────────────────────────────────────
 
-        private void SetupDropArea(VisualElement dropArea)
+        private void SetupDropTarget(VisualElement card)
         {
-            if (dropArea == null) return;
+            if (card == null) return;
 
-            dropArea.RegisterCallback<DragUpdatedEvent>(evt =>
+            card.RegisterCallback<DragUpdatedEvent>(evt =>
             {
-                if (DragAndDrop.objectReferences.OfType<GameObject>().Any())
-                {
-                    DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
-                    dropArea.AddToClassList("dennoko-drop-area--dragover");
-                }
-                else
-                {
-                    DragAndDrop.visualMode = DragAndDropVisualMode.Rejected;
-                }
+                bool any = !IsBaking && DragAndDrop.objectReferences.OfType<GameObject>().Any(go => !EditorUtility.IsPersistent(go));
+                DragAndDrop.visualMode = any ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
+                card.EnableInClassList(DropOverClass, any);
                 evt.StopPropagation();
             });
-
-            dropArea.RegisterCallback<DragLeaveEvent>(_ =>
-            {
-                dropArea.RemoveFromClassList("dennoko-drop-area--dragover");
-            });
-
-            dropArea.RegisterCallback<DragPerformEvent>(evt =>
+            card.RegisterCallback<DragLeaveEvent>(_ => card.RemoveFromClassList(DropOverClass));
+            card.RegisterCallback<DragExitedEvent>(_ => card.RemoveFromClassList(DropOverClass));
+            card.RegisterCallback<DragPerformEvent>(evt =>
             {
                 DragAndDrop.AcceptDrag();
-                dropArea.RemoveFromClassList("dennoko-drop-area--dragover");
-
-                var dropped = DragAndDrop.objectReferences.OfType<GameObject>();
-                Undo.RecordObject(this, "Add Dropped Targets");
-                bool added = false;
-                foreach (var go in dropped)
-                {
-                    if (go != null && !_targets.Contains(go))
-                    {
-                        _targets.Add(go);
-                        added = true;
-                    }
-                }
-                if (added) RefreshTargetsList();
+                card.RemoveFromClassList(DropOverClass);
+                if (!IsBaking && AddGameObjects(DragAndDrop.objectReferences.OfType<GameObject>(), "Add Dropped Targets"))
+                    RefreshTargets();
                 evt.StopPropagation();
             });
         }
 
-        private void AddSelection()
+        /// <summary>シーン上の GameObject を対象に足す。1 つでも足したら true。undoName が null なら Undo に積まない。</summary>
+        private bool AddGameObjects(IEnumerable<GameObject> objects, string undoName)
         {
-            Undo.RecordObject(this, "Add Targets");
-            bool added = false;
-            foreach (var go in Selection.gameObjects)
-            {
-                if (!EditorUtility.IsPersistent(go) && !_targets.Contains(go))
-                {
-                    _targets.Add(go);
-                    added = true;
-                }
-            }
-            _targets.RemoveAll(t => t == null);
-            if (added)
-            {
-                RefreshTargetsList();
-                SetStatus(Tr($"{_targets.Count} 個のターゲットが設定されています。", $"{_targets.Count} target(s) configured."), StatusType.Info);
-            }
+            var toAdd = objects
+                .Where(go => go != null && !EditorUtility.IsPersistent(go) && !_targets.Contains(go))
+                .Distinct()
+                .ToList();
+            if (toAdd.Count == 0) return false;
+            if (undoName != null) Undo.RecordObject(this, undoName);
+            _targets.AddRange(toAdd);
+            return true;
         }
 
-        private void RefreshTargetsList()
+        private void RefreshTargets()
         {
-            if (_targetsContainer == null) return;
-            _targetsContainer.Clear();
-
+            if (_targetList == null) return;
             _targets.RemoveAll(t => t == null);
 
+            // 対象の行 (動的リストなので C# で組む。見た目は USS のクラスだけで決める)
+            _targetList.Clear();
             for (int i = 0; i < _targets.Count; i++)
             {
                 int index = i;
                 var row = new VisualElement();
                 row.AddToClassList("dennoko-target-row");
 
-                var objField = new ObjectField
-                {
-                    objectType = typeof(GameObject),
-                    value = _targets[index]
-                };
-                objField.AddToClassList("dennoko-target-row-field");
-                objField.RegisterValueChangedCallback(evt =>
+                var field = new ObjectField { objectType = typeof(GameObject), allowSceneObjects = true, value = _targets[index] };
+                field.RegisterValueChangedCallback(evt =>
                 {
                     Undo.RecordObject(this, "Change Target Object");
                     _targets[index] = evt.newValue as GameObject;
+                    RefreshTargets();
                 });
+                field.SetEnabled(!IsBaking);
 
-                var removeBtn = new Button(() =>
+                var remove = new Button(() =>
                 {
                     Undo.RecordObject(this, "Remove Target");
                     _targets.RemoveAt(index);
-                    RefreshTargetsList();
-                })
-                {
-                    text = "×"
-                };
-                removeBtn.AddToClassList("dennoko-target-row-remove");
-                removeBtn.tooltip = Tr("このターゲットを一覧から除外", "Remove this target from list");
+                    RefreshTargets();
+                });
+                remove.AddToClassList("dennoko-icon-button");
+                DennokoIcons.Apply(remove, DennokoIcons.Close, "×", Tr("一覧から外す", "Remove from list"));
+                remove.SetEnabled(!IsBaking);
 
-                row.Add(objField);
-                row.Add(removeBtn);
-                _targetsContainer.Add(row);
+                row.Add(field);
+                row.Add(remove);
+                _targetList.Add(row);
             }
+
+            bool hasTargets = _targets.Count > 0;
+            _renderers = hasTargets ? CurvatureBakePipeline.CollectRenderers(_targets) : new List<Renderer>();
+            _unreadable = MeshReadabilityUtility.FindUnreadableMeshes(_renderers);
+
+            DennokoBlockUI.Show(_targetEmpty, !hasTargets);
+            DennokoBlockUI.Show(_targetInfo, hasTargets);
+            DennokoBlockUI.Show(_targetWarning, _unreadable.Count > 0);
+            DennokoBlockUI.Show(_targetClearButton, hasTargets);
+
+            int outputs = _renderers.Sum(r => SurfaceMesh.GetSharedMesh(r)?.subMeshCount ?? 0);
+            SetText(_targetInfoRenderers, $"Renderer {_renderers.Count}");
+            SetText(_targetInfoOutputs, Tr($"出力 {outputs} 枚", $"{outputs} texture(s)"));
+            if (_targetWarningText != null)
+            {
+                _targetWarningText.text = Tr($"Read/Write が無効なメッシュがあります ({_unreadable.Count})",
+                                             $"Read/Write is disabled on {_unreadable.Count} mesh(es)");
+                _targetWarningText.tooltip = string.Join("\n", _unreadable.Select(m => "- " + m.name));
+            }
+
+            RefreshOutputDock();
+            RefreshBakeButton();
+        }
+
+        // ─── B5 出力ドック + 主ボタン ──────────────────────────────────
+
+        private void RefreshOutputDock()
+        {
+            if (_outputPathField == null) return;
+
+            string rule = Tr(
+                $"出力先: <ベーステクスチャのフォルダ>/{CurvatureTextureExporter.OutputFolderName}/ (テクスチャがない場合は {CurvatureTextureExporter.FallbackFolder}/)",
+                $"Output: <base texture folder>/{CurvatureTextureExporter.OutputFolderName}/ (or {CurvatureTextureExporter.FallbackFolder}/ if no texture)");
+
+            var folders = _renderers
+                .SelectMany(r => r.sharedMaterials.Where(m => m != null).DefaultIfEmpty(null))
+                .Select(CurvatureTextureExporter.ResolveOutputFolder)
+                .Distinct()
+                .ToList();
+
+            string path;
+            if (folders.Count == 0)
+                path = Tr("<ベーステクスチャのフォルダ>/", "<base texture folder>/") + CurvatureTextureExporter.OutputFolderName;
+            else if (folders.Count == 1)
+                path = folders[0];
+            else
+                path = folders[0] + Tr($"  ほか {folders.Count - 1} か所", $"  +{folders.Count - 1} more");
+
+            _outputPathField.SetValueWithoutNotify(path);
+            _outputPathField.tooltip = folders.Count > 1 ? rule + "\n\n" + string.Join("\n", folders) : rule;
+
+            if (_outputName != null)
+            {
+                string baseName = _renderers.Count == 1 ? _renderers[0].name : Tr("<Renderer 名>", "<renderer name>");
+                _outputName.text = $"{baseName}{_settings.FileSuffix}.png";
+                _outputName.tooltip = Tr("サブメッシュが複数あるときは <Renderer 名>_<マテリアル名> になります",
+                                         "With several sub-meshes the name becomes <renderer>_<material>");
+            }
+        }
+
+        private void RefreshBakeButton()
+        {
+            if (_bakeButton == null) return;
+            _bakeButton.text = IsBaking ? Tr("ベイク中…", "Baking…") : Tr("ベイク", "Bake");
+
+            bool ready = _renderers.Count > 0;
+            _bakeButton.SetEnabled(ready && !IsBaking);
+            _bakeButton.tooltip = IsBaking ? null
+                : _targets.Count == 0 ? Tr("ベイクする GameObject を追加してください", "Add GameObjects to bake")
+                : !ready ? Tr("対象に MeshRenderer / SkinnedMeshRenderer がありません", "No MeshRenderer or SkinnedMeshRenderer in the targets")
+                : null;
         }
 
         // ─── バージョンチェック ─────────────────────────────────────────────
@@ -980,7 +1095,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     error = true;
                     break;
                 case DennokoVersionChecker.State.Checking:
-                    text = $"{baseText}  " + Tr("確認中...", "Checking...");
+                    text = $"{baseText}  " + Tr("確認中…", "Checking…");
                     break;
                 default:
                     text = baseText;
@@ -989,24 +1104,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _versionLabel.text = text;
             _versionLabel.EnableInClassList("dennoko-version-label--update", update);
             _versionLabel.EnableInClassList("dennoko-version-label--error", error);
-        }
 
-        // ─── ステータスバー ─────────────────────────────────────────────────
-
-        private void SetStatus(string message, StatusType type, long autoResetMs = 3000)
-        {
-            if (_statusLabel == null) return;
-
-            _statusLabel.text = message;
-            _statusLabel.EnableInClassList("dennoko-status--success", type == StatusType.Success);
-            _statusLabel.EnableInClassList("dennoko-status--error",   type == StatusType.Error);
-
-            _statusResetSchedule?.Pause();
-            if (type != StatusType.Info)
+            // 更新ありのラベルは公開配布ページを開く。GitHub への直接の導線は作らない
+            bool hasReleasePage = !string.IsNullOrEmpty(r.Url) &&
+                                  r.Url.IndexOf("github.com", StringComparison.OrdinalIgnoreCase) < 0;
+            if (_appBar != null)
             {
-                _statusResetSchedule = _statusLabel.schedule
-                    .Execute(() => SetStatus("Ready", StatusType.Info))
-                    .StartingIn(autoResetMs);
+                _appBar.ReleaseUrl = hasReleasePage ? r.Url : null;
+                _appBar.SetVersionClickable(update && hasReleasePage,
+                    update && hasReleasePage ? Tr("クリックで配布ページを開く", "Click to open the download page") : null);
             }
         }
 
@@ -1015,18 +1121,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private async void Bake()
         {
             var targets = _targets.Where(t => t != null).Distinct().ToList();
-            if (targets.Count == 0)
-            {
-                SetStatus(Tr("ターゲットが設定されていません。", "No targets selected."), StatusType.Error);
-                EditorUtility.DisplayDialog(Title, Tr("ターゲットの GameObject を1つ以上追加してください。", "Please add at least one target GameObject."), "OK");
-                return;
-            }
-
             var renderers = CurvatureBakePipeline.CollectRenderers(targets);
             if (renderers.Count == 0)
             {
-                SetStatus(Tr("対象に MeshRenderer または SkinnedMeshRenderer が見つかりません。", "No MeshRenderer or SkinnedMeshRenderer found in the targets."), StatusType.Error);
-                EditorUtility.DisplayDialog(Title, Tr("対象に MeshRenderer または SkinnedMeshRenderer が見つかりません。", "No MeshRenderer or SkinnedMeshRenderer found in the targets."), "OK");
+                RefreshTargets();
+                _status.Set(Tr("対象に MeshRenderer / SkinnedMeshRenderer がありません。", "No MeshRenderer or SkinnedMeshRenderer in the targets."), DennokoStatusType.Error);
                 return;
             }
             if (!EnsureReadable(renderers))
@@ -1034,10 +1133,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             _cancellation = new CancellationTokenSource();
             SetBakeInProgress(true);
-            SetStatus(Tr("ベイク処理を実行中...", "Bake in progress..."), StatusType.Info);
+            _status.Set(Tr("ベイク中…", "Baking…"), DennokoStatusType.Busy, 0f);
 
+            // キャンセルは Unity のプログレスバーの「Cancel」で受ける。ステータスにも同じ進捗を出す
             var progress = new ImmediateProgress(p =>
             {
+                _status.Set(Tr("ベイク中… ", "Baking… ") + p.Message, DennokoStatusType.Busy, p.Progress);
                 if (EditorUtility.DisplayCancelableProgressBar(Title, p.Message, p.Progress))
                     _cancellation?.Cancel();
             });
@@ -1050,8 +1151,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             catch (Exception e)
             {
                 Debug.LogException(e);
-                SetStatus(Tr($"ベイクが失敗しました: {e.Message}", $"Bake failed: {e.Message}"), StatusType.Error);
-                EditorUtility.DisplayDialog(Title, Tr($"ベイクが失敗しました: {e.Message}", $"Bake failed: {e.Message}"), "OK");
+                _status.Set(Tr($"ベイクに失敗しました: {e.Message}", $"Bake failed: {e.Message}"), DennokoStatusType.Error);
             }
             finally
             {
@@ -1062,24 +1162,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             }
 
             if (report != null)
-            {
                 ShowReport(report);
-            }
         }
 
         private void SetBakeInProgress(bool baking)
         {
-            if (_bakeButton != null)
-            {
-                _bakeButton.text = baking ? Tr("ベイク中...", "Baking...") : Tr("曲率テクスチャをベイク", "Bake Curvature");
-                _bakeButton.SetEnabled(!baking);
-            }
-            _addSelectedButton?.SetEnabled(!baking);
-            _clearTargetsButton?.SetEnabled(!baking);
-            _resetSettingsButton?.SetEnabled(!baking);
+            _targetFromSelectionButton?.SetEnabled(!baking);
+            _targetClearButton?.SetEnabled(!baking);
+            _targetFixButton?.SetEnabled(!baking);
+            RefreshTargets();
         }
 
-        private static bool EnsureReadable(List<Renderer> renderers)
+        private bool EnsureReadable(List<Renderer> renderers)
         {
             List<Mesh> unreadable = MeshReadabilityUtility.FindUnreadableMeshes(renderers);
             if (unreadable.Count == 0)
@@ -1094,6 +1188,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 return false;
 
             List<Mesh> failed = MeshReadabilityUtility.EnableReadWrite(unreadable);
+            RefreshTargets();
             if (failed.Count == 0)
                 return true;
 
@@ -1105,31 +1200,37 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         private void ShowReport(BakeReport report)
         {
-            if (report.SavedAssetPaths.Count > 0)
+            _lastSavedPath = report.SavedAssetPaths.Count > 0 ? report.SavedAssetPaths[0] : null;
+            if (_lastSavedPath != null)
             {
-                var first = AssetDatabase.LoadAssetAtPath<Texture2D>(report.SavedAssetPaths[0]);
-                if (first != null)
-                    EditorGUIUtility.PingObject(first);
+                var first = AssetDatabase.LoadAssetAtPath<Texture2D>(_lastSavedPath);
+                if (first != null) EditorGUIUtility.PingObject(first);
             }
 
             if (report.Cancelled)
             {
-                SetStatus(Tr("ベイクが中断されました。", "Bake cancelled."), StatusType.Info);
-                EditorUtility.DisplayDialog(Title, Tr("ベイク処理がキャンセルされました。", "Bake process was cancelled."), "OK");
+                _status.Set(Tr("ベイクを中断しました。", "Bake cancelled."), DennokoStatusType.Warning);
                 return;
             }
 
             if (report.Errors.Count > 0)
             {
+                // エラーは件数が多くなり得るので一覧をダイアログで出す
                 string message = Tr(
                     $"{report.SavedAssetPaths.Count} 枚のテクスチャを保存しました ({report.Elapsed.TotalSeconds:F1}s)\n\nエラー:\n{string.Join("\n", report.Errors)}",
                     $"Saved {report.SavedAssetPaths.Count} texture(s) in {report.Elapsed.TotalSeconds:F1}s.\n\nErrors:\n{string.Join("\n", report.Errors)}");
-                SetStatus(Tr("エラーが発生しました。", "An error occurred."), StatusType.Error);
+                _status.Set(Tr($"{report.Errors.Count} 件のエラーがありました。", $"{report.Errors.Count} error(s) occurred."), DennokoStatusType.Error);
                 EditorUtility.DisplayDialog(Title, message, "OK");
                 return;
             }
 
-            SetStatus(Tr($"ベイク完了: {report.SavedAssetPaths.Count} 枚のテクスチャを保存しました ({report.Elapsed.TotalSeconds:F1}s)", $"Bake completed: Saved {report.SavedAssetPaths.Count} texture(s) ({report.Elapsed.TotalSeconds:F1}s)"), StatusType.Success);
+            // P1: 保存したらステータスに「保存: <ファイル名>」。クリックで Project ビューの該当ファイルを Ping
+            int count = report.SavedAssetPaths.Count;
+            string file = _lastSavedPath != null ? Path.GetFileName(_lastSavedPath) : string.Empty;
+            _savedStatusText = count <= 1
+                ? Tr($"保存: {file} ({report.Elapsed.TotalSeconds:F1}s)", $"Saved: {file} ({report.Elapsed.TotalSeconds:F1}s)")
+                : Tr($"保存: {file} ほか {count - 1} 枚 ({report.Elapsed.TotalSeconds:F1}s)", $"Saved: {file} +{count - 1} more ({report.Elapsed.TotalSeconds:F1}s)");
+            _status.Set(_savedStatusText, DennokoStatusType.Success);
         }
 
         private sealed class ImmediateProgress : IProgress<BakeProgress>

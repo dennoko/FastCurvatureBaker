@@ -1,89 +1,136 @@
 <ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+    <!-- 画面パターン P1 変換: 対象を選び、設定して、1 回ベイクする (blocks/patterns.md)。
+         文言はすべて C# の ApplyLanguage が入れる。ここの text は日本語の見本 -->
 
-    <!-- ヘッダー -->
-    <ui:VisualElement name="header" class="dennoko-header">
-        <ui:VisualElement class="dennoko-header-titlegroup">
-            <ui:Label name="title-label" text="Fast Curvature Baker" class="dennoko-title" />
+    <!-- ───────── 標準ヘッダー: トップバー ───────── -->
+    <ui:VisualElement name="appbar" class="dennoko-appbar">
+        <ui:VisualElement class="dennoko-appbar__title">
+            <ui:Label name="appbar-title" text="Fast Curvature Baker" class="dennoko-title" />
             <ui:Label name="version-label" text="" class="dennoko-version-label" />
-            <ui:Button name="version-reload-button" text="↻" class="dennoko-version-reload-button" />
+            <ui:Button name="version-reload-button" class="dennoko-icon-button" />
         </ui:VisualElement>
-        <ui:Button name="lang-button" text="EN" class="dennoko-button-secondary" style="width: 36px; height: 22px; padding: 0; font-size: 11px;" />
+        <ui:VisualElement class="dennoko-appbar__actions">
+            <ui:Button name="appbar-lang" text="EN" class="dennoko-appbar-lang" />
+            <ui:Button name="appbar-manual" class="dennoko-icon-button" />
+            <ui:Button name="appbar-settings" class="dennoko-icon-button" />
+        </ui:VisualElement>
     </ui:VisualElement>
-    <ui:VisualElement class="dennoko-separator" />
 
-    <!-- メインスクロール領域 -->
-    <ui:ScrollView class="dennoko-scroll">
+    <ui:ScrollView name="main-scroll" class="dennoko-scroll">
 
-        <!-- ターゲット設定カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Label name="targets-card-title" text="対象オブジェクト" class="dennoko-section-title dennoko-card-header" />
-            <ui:VisualElement style="flex-direction: row; margin-bottom: 6px;">
-                <ui:Button name="add-selected-button" text="選択中を追加" class="dennoko-button-secondary dennoko-col-grow" />
-                <ui:Button name="clear-targets-button" text="クリア" class="dennoko-button-secondary" style="flex-shrink: 0; width: 60px;" />
+        <!-- B1 対象カード (見出しなし)。カード全体がドロップ先 -->
+        <ui:VisualElement name="target-card" class="dennoko-card dennoko-target-card" style="margin-top: 8px;">
+            <ui:VisualElement name="target-list" class="fcb-target-list" />
+            <ui:VisualElement name="target-empty" class="dennoko-empty-state fcb-target-empty">
+                <ui:Label name="target-empty-message" text="ベイクする GameObject をここへドラッグ＆ドロップ" class="dennoko-empty-state__message" />
             </ui:VisualElement>
-            <ui:VisualElement name="targets-container" />
-            <ui:VisualElement name="drop-area" class="dennoko-drop-area">
-                <ui:Label name="drop-hint-label" text="GameObject をドラッグ＆ドロップして追加" class="dennoko-text-tertiary" style="font-size: 11px;" />
+            <ui:VisualElement name="target-info" class="dennoko-info-row">
+                <ui:Label name="target-info-renderers" text="Renderer 0" />
+                <ui:Label name="target-info-outputs" text="出力 0 枚" />
             </ui:VisualElement>
-        </ui:VisualElement>
-
-        <!-- ベイク基本設定カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Label name="bake-settings-card-title" text="ベイク基本設定" class="dennoko-section-title dennoko-card-header" />
-            <uie:EnumField label="ベイクモード" name="mode-field" />
-            <ui:DropdownField label="解像度" name="resolution-field" />
-            <ui:DropdownField label="UVチャンネル" name="uv-channel-field" />
-            <uie:EnumField label="品質" name="quality-field" />
-            <ui:Toggle label="スーパーサンプリング 2x" name="supersample-toggle" />
-        </ui:VisualElement>
-
-        <!-- ハードエッジ設定カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Label name="hard-edges-card-title" text="ハードエッジ (エッジ検出)" class="dennoko-section-title dennoko-card-header" />
-            <ui:FloatField label="エッジ幅 (m)" name="edge-width-field" />
-            <ui:Slider label="エッジ強度" name="edge-strength-slider" low-value="0" high-value="4" show-input-field="true" />
-            <ui:VisualElement name="sharp-convex-container">
-                <ui:Slider label="最小角角度 (°)" name="sharp-min-angle-slider" low-value="5" high-value="150" show-input-field="true" />
-                <ui:FloatField label="最大ベベル幅 (m)" name="max-bevel-width-field" />
+            <ui:VisualElement name="target-warning" class="dennoko-inline-warning">
+                <ui:Label name="target-warning-text" text="Read/Write が無効なメッシュがあります" class="dennoko-inline-warning__text" />
+                <ui:Button name="target-fix" text="有効にする" class="dennoko-inline-warning__action" />
+            </ui:VisualElement>
+            <ui:VisualElement class="fcb-target-actions">
+                <ui:Label name="target-hint" text="子の Renderer もまとめてベイクします" class="dennoko-hint" />
+                <ui:Button name="target-clear" text="すべて外す" class="dennoko-button-secondary" />
+                <ui:Button name="target-from-selection" text="選択から追加" />
             </ui:VisualElement>
         </ui:VisualElement>
 
-        <!-- スムース曲面設定カード -->
-        <ui:VisualElement name="smooth-surfaces-card" class="dennoko-card">
-            <ui:Label name="smooth-surfaces-card-title" text="曲面設定 (曲面検出)" class="dennoko-section-title dennoko-card-header" />
-            <ui:FloatField label="曲面計測半径 (m)" name="radius-field" />
-            <ui:Slider label="曲面強度" name="strength-slider" low-value="0" high-value="4" show-input-field="true" />
-            <uie:EnumField label="計算ソース" name="source-field" />
+        <!-- B2 設定カード: ベイク -->
+        <ui:VisualElement name="bake-card" class="dennoko-card dennoko-options-card">
+            <ui:VisualElement class="dennoko-card-header dennoko-card-header--row">
+                <ui:Label name="bake-card-title" text="ベイク" class="dennoko-section-title dennoko-card-header__title" />
+                <ui:Button name="bake-card-reset" class="dennoko-icon-button" />
+            </ui:VisualElement>
+            <ui:VisualElement name="mode-row" class="dennoko-field-row">
+                <ui:Label name="mode-label" text="モード" class="dennoko-field-row__label" />
+                <ui:VisualElement name="mode-choice" class="dennoko-segmented dennoko-choice-group">
+                    <ui:Button name="mode-default" text="符号付き" />
+                    <ui:Button name="mode-convex" text="凸" />
+                    <ui:Button name="mode-concave" text="凹" />
+                    <ui:Button name="mode-sharp" text="シャープ凸" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+            <ui:DropdownField name="resolution-field" label="解像度" />
+            <ui:DropdownField name="uv-channel-field" label="UV チャンネル" />
+            <ui:VisualElement name="quality-row" class="dennoko-field-row">
+                <ui:Label name="quality-label" text="品質" class="dennoko-field-row__label" />
+                <ui:VisualElement name="quality-choice" class="dennoko-segmented dennoko-choice-group">
+                    <ui:Button name="quality-draft" text="Draft" />
+                    <ui:Button name="quality-standard" text="Standard" />
+                    <ui:Button name="quality-high" text="High" />
+                    <ui:Button name="quality-ultra" text="Ultra" />
+                </ui:VisualElement>
+            </ui:VisualElement>
+            <ui:Toggle name="supersample-toggle" text="スーパーサンプリング 2x" />
+
+            <!-- 詳細: 閉じている間は初期値と違う項目だけをチップで要約 -->
+            <ui:VisualElement name="advanced-details" class="dennoko-details dennoko-details--collapsed">
+                <ui:VisualElement class="dennoko-details__header">
+                    <ui:Label text="▶" class="dennoko-details__arrow" />
+                    <ui:Label name="advanced-title" text="詳細" class="dennoko-details__title" />
+                    <ui:VisualElement name="advanced-chips" class="dennoko-details__chips" />
+                </ui:VisualElement>
+                <ui:VisualElement class="dennoko-details__content">
+                    <ui:Toggle name="same-component-toggle" text="同一接続パーツのみ" />
+                    <ui:Slider name="normal-rejection-slider" label="法線拒絶しきい値" low-value="-1" high-value="0.75" show-input-field="true" />
+                    <ui:SliderInt name="blur-passes-slider" label="ブラー反復回数" low-value="0" high-value="16" show-input-field="true" />
+                    <ui:SliderInt name="dilation-slider" label="ピクセル拡張幅 (px)" low-value="0" high-value="64" show-input-field="true" />
+                </ui:VisualElement>
+            </ui:VisualElement>
         </ui:VisualElement>
 
-        <!-- 詳細設定カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Foldout text="詳細設定" name="advanced-foldout" value="false" class="dennoko-section-title">
-                <ui:Toggle label="同一接続パーツのみ" name="same-component-toggle" />
-                <ui:Slider label="法線拒絶しきい値" name="normal-rejection-slider" low-value="-1" high-value="0.75" show-input-field="true" />
-                <ui:SliderInt label="ブラー反復回数" name="blur-passes-slider" low-value="0" high-value="16" show-input-field="true" />
-                <ui:SliderInt label="ピクセル拡張幅 (px)" name="dilation-slider" low-value="0" high-value="64" show-input-field="true" />
-            </ui:Foldout>
+        <!-- B2 設定カード: ハードエッジ / シャープ凸エッジ (モードで見出しと中身が変わる) -->
+        <ui:VisualElement name="edge-card" class="dennoko-card dennoko-options-card">
+            <ui:VisualElement class="dennoko-card-header dennoko-card-header--row">
+                <ui:Label name="edge-card-title" text="ハードエッジ" class="dennoko-section-title dennoko-card-header__title" />
+                <ui:Button name="edge-card-reset" class="dennoko-icon-button" />
+            </ui:VisualElement>
+            <ui:FloatField name="edge-width-field" label="エッジ幅 (m)" />
+            <ui:Slider name="edge-strength-slider" label="エッジ強度" low-value="0" high-value="4" show-input-field="true" />
+            <ui:VisualElement name="sharp-convex-content">
+                <ui:Slider name="sharp-min-angle-slider" label="最小角角度 (°)" low-value="5" high-value="150" show-input-field="true" />
+                <ui:FloatField name="max-bevel-width-field" label="最大ベベル幅 (m)" />
+            </ui:VisualElement>
         </ui:VisualElement>
 
-        <!-- 保存先カード -->
-        <ui:VisualElement class="dennoko-card">
-            <ui:Label name="output-card-title" text="出力設定" class="dennoko-section-title dennoko-card-header" />
-            <ui:Toggle label="同名ファイルを上書き保存する" name="overwrite-toggle" />
-            <ui:Label name="output-info-label" text="出力先: &lt;ベーステクスチャのフォルダ&gt;/BakedCurvature/ (テクスチャがない場合は Assets/BakedCurvature/)" class="dennoko-text-tertiary" style="font-size: 11px; white-space: normal; margin-top: 4px;" />
+        <!-- B2 設定カード: 曲面 (シャープ凸モードでは使わないので隠す) -->
+        <ui:VisualElement name="smooth-card" class="dennoko-card dennoko-options-card">
+            <ui:VisualElement class="dennoko-card-header dennoko-card-header--row">
+                <ui:Label name="smooth-card-title" text="曲面" class="dennoko-section-title dennoko-card-header__title" />
+                <ui:Button name="smooth-card-reset" class="dennoko-icon-button" />
+            </ui:VisualElement>
+            <ui:FloatField name="radius-field" label="曲面計測半径 (m)" />
+            <ui:Slider name="strength-slider" label="曲面強度" low-value="0" high-value="4" show-input-field="true" />
+            <ui:VisualElement name="source-row" class="dennoko-field-row">
+                <ui:Label name="source-label" text="計算ソース" class="dennoko-field-row__label" />
+                <ui:VisualElement name="source-choice" class="dennoko-segmented dennoko-choice-group">
+                    <ui:Button name="source-shading" text="シェーディング法線" />
+                    <ui:Button name="source-geometry" text="ジオメトリ" />
+                </ui:VisualElement>
+            </ui:VisualElement>
         </ui:VisualElement>
-
     </ui:ScrollView>
 
-    <ui:VisualElement class="dennoko-separator" />
-
-    <!-- フッター (アクションボタン) -->
-    <ui:VisualElement class="dennoko-card dennoko-footer">
-        <ui:Button name="bake-button" text="曲率テクスチャをベイク" class="dennoko-button-primary" />
-        <ui:Button name="reset-settings-button" text="設定を初期値にリセット" class="dennoko-button-secondary" style="margin-top: 4px;" />
+    <!-- ───────── B5 出力ドック (2 行) ───────── -->
+    <ui:VisualElement name="output-dock" class="dennoko-output">
+        <ui:VisualElement class="dennoko-output-row">
+            <ui:Label name="output-path-label" text="出力先" class="dennoko-output__label" />
+            <ui:TextField name="output-path" value="" readonly="true" class="dennoko-field-readonly" />
+        </ui:VisualElement>
+        <ui:VisualElement class="dennoko-output-row">
+            <ui:Label name="output-name-label" text="名前" class="dennoko-output__label" />
+            <ui:Label name="output-name" text="&lt;Renderer 名&gt;_Curvature.png" class="fcb-output-name" />
+            <ui:Toggle name="overwrite-toggle" text="上書き" />
+        </ui:VisualElement>
     </ui:VisualElement>
 
-    <!-- ステータスバー -->
+    <!-- ───────── フッター (主ボタン 1 つ) ───────── -->
+    <ui:VisualElement class="dennoko-footer dennoko-footer--joined">
+        <ui:Button name="bake-button" text="ベイク" class="dennoko-button-primary" />
+    </ui:VisualElement>
     <ui:Label name="status-label" text="Ready" class="dennoko-status" />
-
 </ui:UXML>

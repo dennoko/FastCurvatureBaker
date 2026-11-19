@@ -5,39 +5,71 @@
    - Unity エディタのテーマ (Personal Light / Dark) に依存しない
    - カラーはすべて .dennoko-root の USS 変数を経由する
    - カラーコードのハードコーディングは変数定義部のみに限定する
+
+   モダン・コンパクト・高視認性デザインシステム:
+     - 境界線の 2 段階化: 静的な構造線 (--dennoko-outline-subtle: #2b2b2b) と
+       操作要素の枠線 (--dennoko-outline: #3d3d3d) を分け、ワイヤーフレーム感を解消
+     - コンパクトメトリクス: 左ラベル列を 100px〜30% (最大128px) に凝縮し、
+       入力欄 20px / 標準ボタン 22px / Primary 28px の高密度リズムに統一
+     - 全入力フィールドの垂直中央揃え: 行 (align-items: center) とラベル・サブラベル・
+       入力テキスト (middle-left + 上下余白 0) の中心軸を一致させる
+     - 複合フィールドの伸縮性: Vector2/3/4・Rect・Bounds の min-width: 0 /
+       flex-basis: 0 とスペーサー非表示化により狭いウィンドウ幅でも切れない
+     - タイポグラフィ階層: ラベル 11px / サブラベル (X,Y,Z,Center等) 10px で入力値を際立たせる
+     - Segmented Control (.dennoko-segmented): 排他選択・タブを 1 本のピルバーに収める
+     - スライダー: 視認性の高い 4px トラック (#5a5a5a) + 正円つまみ + 48px 数値入力欄
+     - HelpBox: 16px 小型アイコン + 3px 左アクセントボーダー
+     - 標準ヘッダー / フッター (⑪): トップバー .dennoko-appbar、出力ドック .dennoko-output、
+       フッター .dennoko-footer、ステータス .dennoko-status (success / warning / error / busy)
    ============================================================ */
 
 /* ─── ルート: USS 変数定義 + 最背面背景 ──────────────────── */
 
 .dennoko-root {
     /* ニュートラル・レイヤー (サーフェス) */
-    --dennoko-surface-0: #121212; /* 最背面背景 */
-    --dennoko-surface-1: #1e1e1e; /* カード・入力欄背景 */
-    --dennoko-surface-2: #2c2c2c; /* ホバー・ツールバー背景 */
-    --dennoko-outline: #484848;   /* 境界線・セパレーター */
+    --dennoko-surface-0: #121212; /* 最背面背景 / 文字入力欄・セグメント溝 (沈める) */
+    --dennoko-surface-1: #1e1e1e; /* カード背景 */
+    --dennoko-surface-2: #2c2c2c; /* ボタン・選択欄・ツールバー (浮かせる) */
+    --dennoko-surface-3: #383838; /* 浮かせた要素のホバー */
+
+    /* 境界線 (2 段階: 静的な構造線は控えめに、操作要素の枠は明確に) */
+    --dennoko-outline-subtle: #2b2b2b; /* カード枠・見出し下線・沈めた入力欄の通常枠・リスト枠 */
+    --dennoko-outline: #3d3d3d;        /* 浮かせた操作要素 (ボタン・Dropdown・チェック箱) の枠 */
+    --dennoko-outline-hover: #5a5a5a;  /* ホバー時の境界線・スライダートラック */
 
     /* タイポグラフィ */
-    --dennoko-text-primary: #ffffff;   /* タイトル・強調 */
-    --dennoko-text-secondary: #cccccc; /* 本文・標準ラベル */
-    --dennoko-text-tertiary: #aaaaaa;  /* 補足・注記 */
+    --dennoko-text-primary: #ffffff;   /* タイトル・入力値・強調 */
+    --dennoko-text-secondary: #c4c4c4; /* 本文・標準ラベル */
+    --dennoko-text-tertiary: #8e8e8e;  /* 補足・注記・サブラベル・セクション見出し */
     --dennoko-text-disabled: #555555;  /* 無効状態 */
 
     /* セマンティック (状態・警告) */
-    --dennoko-semantic-error: #9b1b30;   /* エラー */
-    --dennoko-semantic-warning: #ffb74d; /* 警告 */
-    --dennoko-semantic-success: #4caf50; /* 成功 */
-    --dennoko-semantic-info: #64b5f6;    /* 情報 */
+    --dennoko-semantic-error: #9b1b30;      /* エラー (塗り・枠線用) */
+    --dennoko-semantic-error-text: #ff6b6b; /* エラー (文字用: 暗背景で読める明度) */
+    --dennoko-semantic-warning: #ffb74d;    /* 警告 */
+    --dennoko-semantic-success: #4caf50;    /* 成功 */
+    --dennoko-semantic-info: #64b5f6;       /* 情報 */
 
     /* インタラクション */
-    --dennoko-accent: #ffffff;                          /* アクセントカラー */
-    /* ホバー時の重ね色 (予約: この USS 内では未使用。C# から動的に半透明レイヤーを
-       重ねる場合などに使う。不要ならプロジェクト側で削除してよい) */
-    --dennoko-hover-overlay: rgba(255, 255, 255, 0.05);
+    --dennoko-accent: #ffffff;    /* フォーカス枠・Primary ボタン・チェック ON の塗り */
+    --dennoko-checkmark: #121212; /* チェックマーク / ラジオの点 (accent 塗りの上) */
+    --dennoko-hover-overlay: rgba(255, 255, 255, 0.05); /* リスト行・セグメントホバー */
 
-    /* ステータスバー用の派生色 (semantic 色を Surface1 に馴染ませたもの) */
+    /* 選択状態 (排他ボタン・タブ・リスト選択行・範囲バー)。accent とは役割を分ける */
+    --dennoko-selection-border: #64b5f6;
+    --dennoko-selection-bg: rgba(100, 181, 246, 0.16);
+    --dennoko-selection-bg-hover: rgba(100, 181, 246, 0.26);
+
+    /* コンポーネント派生色 */
+    --dennoko-list-alt-bg: rgba(255, 255, 255, 0.025);  /* リスト交互行 (ごくわずかな差) */
+    --dennoko-progress-fill: rgba(100, 181, 246, 0.55); /* ProgressBar の塗り (白文字が読める明度) */
+
+    /* ステータス / HelpBox 用の派生色 (semantic 色を暗背景に馴染ませたもの) */
     --dennoko-status-success-bg: rgba(76, 175, 80, 0.25);
     --dennoko-status-error-bg: rgba(155, 27, 48, 0.45);
-    --dennoko-status-error-text: #ffa6a6; /* 暗背景で読める明度に調整したエラー文字色 */
+    --dennoko-status-error-text: #ffa6a6; /* 赤背景の上で読める明度に調整したエラー文字色 */
+    --dennoko-status-warning-bg: rgba(255, 183, 77, 0.12);
+    --dennoko-status-info-bg: rgba(100, 181, 246, 0.12);
 
     background-color: var(--dennoko-surface-0);
     flex-grow: 1;
@@ -49,6 +81,7 @@
 
 .dennoko-root .unity-text-element {
     color: var(--dennoko-text-secondary);
+    font-size: 11px;
 }
 
 .dennoko-root .dennoko-text-primary {
@@ -63,38 +96,46 @@
     color: var(--dennoko-text-disabled);
 }
 
-/* セマンティックテキスト */
-.dennoko-root .dennoko-text-error   { color: var(--dennoko-semantic-error); }
+/* セマンティックテキスト
+   ⚠ エラー文字に --dennoko-semantic-error (#9b1b30) を使うと暗背景でほぼ読めない。
+   文字には明度を上げた --dennoko-semantic-error-text を使う。 */
+.dennoko-root .dennoko-text-error   { color: var(--dennoko-semantic-error-text); }
 .dennoko-root .dennoko-text-warning { color: var(--dennoko-semantic-warning); }
 .dennoko-root .dennoko-text-success { color: var(--dennoko-semantic-success); }
 .dennoko-root .dennoko-text-info    { color: var(--dennoko-semantic-info); }
 
 /* ─── ② ボタンの強制リセット ─────────────────────────────
    エディタテーマ由来の境界線・グラデーションを遮断し、
-   フラットな dennokoworks デザインに固定する。 */
+   フラットな dennokoworks デザインに固定する。
+   ボタンは「押せる = 浮いている」ため Surface2 に置く (文字入力欄は Surface0 に沈める)。 */
 
 .dennoko-root .unity-button {
-    background-color: var(--dennoko-surface-1);
+    background-color: var(--dennoko-surface-2);
     border-color: var(--dennoko-outline);
     border-width: 1px;
     border-radius: 4px;
     color: var(--dennoko-text-primary);
-    padding: 4px 12px;
-    margin: 2px 4px;
+    font-size: 11px;
+    padding: 2px 10px;
+    margin: 1px 2px;
+    /* 同じ行に並ぶボタン・入力欄の高さを揃えるコンパクト基準 (22px) */
+    min-height: 22px;
+    -unity-text-align: middle-center;
 }
 
 .dennoko-root .unity-button:hover {
-    background-color: var(--dennoko-surface-2);
+    background-color: var(--dennoko-surface-3);
+    border-color: var(--dennoko-outline-hover);
 }
 
 .dennoko-root .unity-button:active {
-    background-color: var(--dennoko-surface-2);
+    background-color: var(--dennoko-surface-3);
     border-color: var(--dennoko-accent);
 }
 
 .dennoko-root .unity-button:disabled {
-    background-color: var(--dennoko-surface-0);
-    border-color: var(--dennoko-outline);
+    background-color: var(--dennoko-surface-1);
+    border-color: var(--dennoko-outline-subtle);
     color: var(--dennoko-text-disabled);
 }
 
@@ -103,18 +144,38 @@
    .dennoko-root .unity-button (0,2,0) や :hover (0,3,0) に確実に勝たせる。
    USS に !important は存在しないため、詳細度と定義順(同数は後勝ち)で解決する。 */
 
-/* Primary Action ボタン (Apply & Save 等) */
+/* Primary Action ボタン (Apply & Save 等)
+   画面内で最優先のアクションなので accent (白) で塗り、文字は暗色にする。 */
 .dennoko-root .unity-button.dennoko-button-primary {
-    background-color: var(--dennoko-surface-2);
+    background-color: var(--dennoko-accent);
+    border-color: var(--dennoko-accent);
+    color: var(--dennoko-surface-0);
     -unity-font-style: bold;
-    font-size: 13px;
-    height: 34px;
+    font-size: 12px;
+    height: 28px;
+    margin: 2px;
 }
 
-/* Secondary Action ボタン (Reset All 等) */
+.dennoko-root .unity-button.dennoko-button-primary:hover {
+    background-color: var(--dennoko-text-secondary);
+    border-color: var(--dennoko-text-secondary);
+}
+
+.dennoko-root .unity-button.dennoko-button-primary:active {
+    background-color: var(--dennoko-text-tertiary);
+    border-color: var(--dennoko-accent);
+}
+
+/* 無効時は accent 塗りをやめる (汎用 :disabled (0,3,0) より詳細度を上げる) */
+.dennoko-root .unity-button.dennoko-button-primary:disabled {
+    background-color: var(--dennoko-surface-1);
+    border-color: var(--dennoko-outline-subtle);
+    color: var(--dennoko-text-disabled);
+}
+
+/* Secondary Action ボタン (Reset All 等)。高さは汎用ボタンと同じにし、文字色で差を付ける */
 .dennoko-root .unity-button.dennoko-button-secondary {
     font-size: 11px;
-    height: 26px;
     color: var(--dennoko-text-secondary);
 }
 
@@ -122,41 +183,121 @@
     color: var(--dennoko-text-primary);
 }
 
-/* Toggle ボタン型のアクティブ状態用 (ON/OFF 切り替えボタン等)
-   サーフェス間の明度差だけでは選択中がひと目で分からないため、枠線を info の青
-   (--dennoko-semantic-info) にして「選択中」を明示する。
+/* Toggle ボタン型のアクティブ状態用 (ON/OFF 切り替えボタン・排他選択・タブ等)
+   青枠 + 青ティント背景で「選択中」を明示する。色は accent ではなく
+   --dennoko-selection-* を使う (accent = フォーカス・最優先アクション、selection = 選択中)。
    :hover / :active でも青枠を維持する (維持しないと汎用の .unity-button:active が
    accent の白枠で上書きしてしまう)。 */
 .dennoko-root .unity-button.dennoko-button-active {
-    background-color: var(--dennoko-surface-2);
-    border-color: var(--dennoko-semantic-info);
+    background-color: var(--dennoko-selection-bg);
+    border-color: var(--dennoko-selection-border);
     border-width: 1px;
     color: var(--dennoko-text-primary);
     -unity-font-style: bold;
 }
 .dennoko-root .unity-button.dennoko-button-active:hover {
-    background-color: var(--dennoko-outline);
-    border-color: var(--dennoko-semantic-info);
+    background-color: var(--dennoko-selection-bg-hover);
+    border-color: var(--dennoko-selection-border);
 }
 .dennoko-root .unity-button.dennoko-button-active:active {
-    border-color: var(--dennoko-semantic-info);
+    border-color: var(--dennoko-selection-border);
+}
+
+/* Segmented Control (ピルバー型グループ: 排他選択ボタン群やタブバーの親に付与)
+   Surface0 の沈んだ溝の中にボタンを隙間なく収め、選択中 (.dennoko-button-active) のみ
+   Surface2 + 青枠で浮かび上がらせるモダン・省スペース表現。 */
+.dennoko-root .dennoko-segmented {
+    flex-direction: row;
+    align-items: center;
+    background-color: var(--dennoko-surface-0);
+    border-width: 1px;
+    border-color: var(--dennoko-outline-subtle);
+    border-radius: 5px;
+    padding: 2px;
+    margin: 2px 0;
+}
+
+.dennoko-root .dennoko-segmented > .unity-button {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    margin: 0;
+    min-height: 20px;
+    padding: 2px 8px;
+    font-size: 11px;
+    background-color: transparent;
+    border-width: 1px;
+    border-color: transparent;
+    border-radius: 3px;
+    color: var(--dennoko-text-tertiary);
+}
+
+.dennoko-root .dennoko-segmented > .unity-button:hover {
+    background-color: var(--dennoko-hover-overlay);
+    border-color: transparent;
+    color: var(--dennoko-text-secondary);
+}
+
+.dennoko-root .dennoko-segmented > .unity-button.dennoko-button-active {
+    background-color: var(--dennoko-surface-2);
+    border-color: var(--dennoko-selection-border);
+    color: var(--dennoko-text-primary);
+    -unity-font-style: bold;
+}
+
+.dennoko-root .dennoko-segmented > .unity-button.dennoko-button-active:hover {
+    background-color: var(--dennoko-surface-3);
+    border-color: var(--dennoko-selection-border);
 }
 
 /* ─── ③ 入力フィールドのリセット ─────────────────────────
    TextField / IntegerField / FloatField / DropdownField / EnumField /
-   ObjectField など、.unity-base-field__input を持つすべてに適用される。 */
+   ObjectField など、.unity-base-field__input を持つすべてに適用される。
+   文字入力欄は「沈める」ため Surface0 に置く (カード Surface1 より暗い)。 */
 
-/* ボックススタイル (背景・枠・パディング) は外側の __input のみに適用する */
+/* ラベルと入力欄の垂直位置を中央に揃える (ビルトインの upper-left + padding-top による上ズレを解消) */
+.dennoko-root .unity-base-field {
+    align-items: center;
+    min-width: 0;
+    margin-top: 1px;
+    margin-bottom: 2px;
+}
+
+/* ラベル列の幅をコンパクトに揃える (100px〜30%、最大128px)。
+   flex-shrink: 0 でラベル列が勝手に潰れず、右側の入力欄列の開始位置を全行でピタリと揃える。
+   上下の margin / padding を 0 にし、middle-left で入力欄と高さを完全一致させる。 */
+.dennoko-root .unity-base-field > .unity-base-field__label {
+    min-width: 100px;
+    width: 30%;
+    max-width: 128px;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--dennoko-text-secondary);
+    padding: 0 6px 0 0;
+    margin: 0;
+    -unity-text-align: middle-left;
+}
+
+/* ボックススタイル (背景・枠・パディング) は外側の __input のみに適用する。
+   通常時の枠は --dennoko-outline-subtle で静かに馴染ませ、ホバー・フォーカスで際立たせる。
+   ⚠ ビルトイン USS の .unity-base-field__input には固定の min-width が設定されているため、
+   min-width: 0 と flex-shrink: 1 を明示してウィンドウ幅を狭めた際に右端が見切れないようにする。 */
 .dennoko-root .unity-base-field__input {
-    background-color: var(--dennoko-surface-1);
-    border-color: var(--dennoko-outline);
+    background-color: var(--dennoko-surface-0);
+    border-color: var(--dennoko-outline-subtle);
     border-width: 1px;
     border-radius: 4px;
     color: var(--dennoko-text-primary);
-    padding: 3px 6px;
+    font-size: 11px;
+    min-width: 0;
+    min-height: 20px;
+    flex-shrink: 1;
+    padding: 1px 6px;
+    margin-top: 0;
+    margin-bottom: 0;
 }
 
-/* 内側のテキスト要素には color のみを適用する。
+/* 内側のテキスト要素にはボックススタイルを掛けず、文字色・サイズ・垂直中央揃えのみを適用する。
    ⚠ ボックススタイルを内側にも掛けるとフィールド内部に二重の枠・
    二重のパディングが生まれてレイアウトが崩れる。
    Light テーマの黒文字上書きは、この子孫セレクタの詳細度 (0,3,0) で防ぐ
@@ -164,10 +305,17 @@
 .dennoko-root .unity-base-field__input .unity-text-element,
 .dennoko-root .unity-object-field__input .unity-object-field-display__label {
     color: var(--dennoko-text-primary);
+    font-size: 11px;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+    -unity-text-align: middle-left;
 }
 
+/* 沈めた入力欄のホバーは背景ではなく枠線の明度で示す */
 .dennoko-root .unity-base-field:hover .unity-base-field__input {
-    background-color: var(--dennoko-surface-2);
+    border-color: var(--dennoko-outline-hover);
 }
 
 /* フォーカスは内側のテキスト入力要素に移るため、両方の書き方でカバーする */
@@ -176,8 +324,48 @@
     border-color: var(--dennoko-accent);
 }
 
+/* 選択欄 (Dropdown / Enum / Mask / Layer / Tag 等) は「押して選ぶ」ので
+   ボタンと同じ Surface2 に浮かせ、枠も一段明確にして文字入力欄と見分けられるようにする */
+.dennoko-root .unity-base-popup-field > .unity-base-field__input,
+.dennoko-root .unity-enum-field > .unity-base-field__input {
+    background-color: var(--dennoko-surface-2);
+    border-color: var(--dennoko-outline);
+}
+
+.dennoko-root .unity-base-popup-field:hover > .unity-base-field__input,
+.dennoko-root .unity-enum-field:hover > .unity-base-field__input {
+    background-color: var(--dennoko-surface-3);
+    border-color: var(--dennoko-outline-hover);
+}
+
+/* 読み取り専用 (独自クラス。readonly="true" の TextField 等に併せて付ける)
+   ※ Unity 2022.3 には読み取り専用を示すビルトインクラスがないため明示する */
+.dennoko-root .dennoko-field-readonly > .unity-base-field__input,
+.dennoko-root .dennoko-field-readonly:hover > .unity-base-field__input,
+.dennoko-root .dennoko-field-readonly:focus > .unity-base-field__input,
+.dennoko-root .dennoko-field-readonly > .unity-base-field__input:focus {
+    background-color: transparent;
+    border-color: var(--dennoko-outline-subtle);
+}
+
+.dennoko-root .dennoko-field-readonly > .unity-base-field__input .unity-text-element {
+    color: var(--dennoko-text-tertiary);
+}
+
+/* 複数行入力 (独自クラス。multiline="true" の TextField に併せて付ける)
+   ラベルを入力欄 1 行目のベースラインに揃える */
+.dennoko-root .dennoko-field-multiline > .unity-base-field__label {
+    align-self: flex-start;
+    padding-top: 3px;
+    -unity-text-align: upper-left;
+}
+
+.dennoko-root .dennoko-field-multiline > .unity-base-field__input .unity-text-element {
+    -unity-text-align: upper-left;
+}
+
 /* テキストキャレットと選択範囲の色
-   (Light テーマでは黒キャレットになり、暗い入力欄で見えなくなる) ※要実機確認 */
+   (Light テーマでは黒キャレットになり、暗い入力欄で見えなくなる) */
 .dennoko-root .unity-base-text-field__input {
     --unity-cursor-color: var(--dennoko-text-primary);
     --unity-selection-color: rgba(100, 181, 246, 0.4);
@@ -186,33 +374,220 @@
 /* ドロップダウンの矢印アイコン
    ⚠ tint は「乗算」のため、Light テーマの黒い矢印画像は明るくできない。
    ダークスキン用 (d_ 接頭辞) のビルトインアイコンを明示指定して
-   画像自体をテーマ非依存にする。※アイコン名は要実機確認
-   (references/troubleshooting.md 参照) */
-.dennoko-root .unity-base-popup-field__arrow {
+   画像自体をテーマ非依存にする。 */
+.dennoko-root .unity-base-popup-field__arrow,
+.dennoko-root .unity-enum-field__arrow {
     background-image: resource("d_dropdown");
     -unity-background-image-tint-color: var(--dennoko-text-secondary);
 }
 
-/* ObjectField のセレクタボタン
-   ⚠ tint は乗算 — Light テーマでピッカーアイコンが見えない場合は
-   上記の矢印と同様に background-image へ d_ 系アイコンを明示指定する */
+/* ObjectField のセレクタボタン */
 .dennoko-root .unity-object-field__selector {
     background-color: var(--dennoko-surface-2);
     -unity-background-image-tint-color: var(--dennoko-text-secondary);
 }
 
+/* ColorField / GradientField / CurveField
+   内側のプレビューが上に寄って下に隙間ができる・角丸からはみ出すため、
+   パディングを詰めて中央に揃え、角丸でクリップする */
+.dennoko-root .unity-color-field > .unity-base-field__input,
+.dennoko-root .unity-gradient-field > .unity-base-field__input {
+    padding: 2px;
+    align-items: center;
+    overflow: hidden;
+}
+
+.dennoko-root .unity-curve-field > .unity-base-field__input {
+    padding: 2px;
+    overflow: hidden;
+}
+
+/* ─── ③-b 複合フィールド (Vector2/3/4・Rect・Bounds) ─────────
+   親の __input にも③のボックスが乗り「全体枠 > 各数値枠」の二重枠
+   (BoundsField では三重枠) になるため、親側の枠を消して末端の数値欄だけに枠を出す。
+   ⚠ ビルトイン USS の .unity-composite-field .unity-base-field__input および
+   .unity-composite-field .unity-composite-field__input には flex: 1 0 auto (flex-shrink: 0, flex-basis: auto)
+   が設定されており、内側の .unity-composite-field__field に flex-grow: 1 を与えると
+   __input 全体が「親行の 100% 幅」として計測されたまま縮まなくなり、
+   左ラベル (または Center / Extents ラベル) の幅ぶんだけ右端から溢れて切れてしまう。
+   flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-width: 0; で確実に残り幅へ収める。 */
+
+.dennoko-root .unity-composite-field > .unity-base-field__input,
+.dennoko-root .unity-composite-field > .unity-composite-field__input,
+.dennoko-root .unity-composite-field:hover > .unity-base-field__input,
+.dennoko-root .unity-composite-field:focus > .unity-base-field__input,
+.dennoko-root .unity-bounds-field > .unity-base-field__input,
+.dennoko-root .unity-bounds-field:hover > .unity-base-field__input,
+.dennoko-root .unity-bounds-field:focus > .unity-base-field__input,
+.dennoko-root .unity-bounds-int-field > .unity-base-field__input,
+.dennoko-root .unity-bounds-int-field:hover > .unity-base-field__input,
+.dennoko-root .unity-bounds-int-field:focus > .unity-base-field__input {
+    background-color: transparent;
+    border-width: 0;
+    padding: 0;
+    margin-left: 0;
+    margin-right: 0;
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+}
+
+/* BoundsField 内の Vector3Field は、外側 (Bounds) のホバーでも背景を出さない */
+.dennoko-root .unity-base-field:hover .unity-composite-field > .unity-base-field__input {
+    background-color: transparent;
+}
+
+/* 2 要素の複合フィールド (Vector2Field / Vector2IntField / RectField) には
+   ビルトイン実装で 3 列目合わせ用のダミー要素 (.unity-composite-field__field-spacer) が挿入される。
+   これが残ると右 1/3 が空白になり、ウィンドウ幅を狭めた際に X/Y 欄が過剰に潰れるため非表示にする。 */
+.dennoko-root .unity-composite-field__field-spacer,
+.dennoko-root .unity-base-field--no-label .unity-composite-field__field-spacer {
+    display: none;
+}
+
+/* 複数行複合フィールド (RectField 等) の行グループ (.unity-composite-field__field-group) */
+.dennoko-root .unity-composite-field__field-group {
+    flex-direction: row;
+    flex-grow: 0;
+    flex-shrink: 0;
+    flex-basis: auto;
+    min-width: 0;
+    margin-top: 0;
+    margin-bottom: 2px;
+    margin-left: 0;
+    margin-right: 0;
+    padding: 0;
+}
+
+/* 各サブフィールド (X / Y / Z / W ...) で横幅を均等に分割する。
+   ビルトインの .unity-composite-field__field-group > .unity-composite-field__field も併記して
+   min-width と flex-basis: 0 を確実に適用する。 */
+.dennoko-root .unity-composite-field__field,
+.dennoko-root .unity-composite-field__field-group > .unity-composite-field__field {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    align-items: center;
+    margin-left: 4px;
+    margin-right: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.dennoko-root .unity-composite-field__field--first,
+.dennoko-root .unity-composite-field__field-group > .unity-composite-field__field--first {
+    margin-left: 0;
+}
+
+/* X / Y / Z / W のサブラベルは 10px + Tertiary 色で一歩引かせ、
+   middle-left で隣の数値入力欄と垂直中央を揃える */
+.dennoko-root .unity-composite-field__field > .unity-base-field__label,
+.dennoko-root .unity-composite-field__field-group > .unity-composite-field__field > .unity-base-field__label {
+    min-width: 0;
+    width: auto;
+    max-width: none;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--dennoko-text-tertiary);
+    margin: 0 2px 0 0;
+    padding: 0;
+    -unity-text-align: middle-left;
+}
+
+/* 末端の数値入力ボックスも flex-basis: 0; width: 0; min-width: 0; にして
+   タブ幅を狭めた際にも親コンテナを押し広げず滑らかに伸縮させる */
+.dennoko-root .unity-composite-field__field > .unity-base-field__input,
+.dennoko-root .unity-composite-field__field-group > .unity-composite-field__field > .unity-base-field__input {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    width: 0;
+    padding: 1px 4px;
+    overflow: hidden;
+}
+
+/* 2 段構成の複合フィールド (RectField / BoundsField) の左メインラベルは
+   1 段目の入力行 (20px 高) の垂直中央に揃える */
+.dennoko-root .unity-rect-field > .unity-base-field__label,
+.dennoko-root .unity-rect-int-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-int-field > .unity-base-field__label {
+    align-self: flex-start;
+    height: 20px;
+    padding-top: 0;
+    padding-bottom: 0;
+    -unity-text-align: middle-left;
+}
+
+/* BoundsField: 他のフィールドと同じ「左ラベル列 + 右入力列」の 2 カラムに揃え、
+   Center / Extents のラベル幅をコンパクトに固定して X/Y/Z の縦ラインを揃える */
+.dennoko-root .unity-bounds-field,
+.dennoko-root .unity-bounds-int-field {
+    flex-direction: row;
+    min-width: 0;
+}
+
+/* align-items: stretch で Center / Extents の 2 行を右端まで確実に広げる */
+.dennoko-root .unity-bounds-field > .unity-base-field__input,
+.dennoko-root .unity-bounds-int-field > .unity-base-field__input {
+    flex-grow: 1;
+    flex-shrink: 1;
+    flex-basis: 0;
+    min-width: 0;
+    flex-direction: column;
+    align-items: stretch;
+    margin-left: 0;
+    margin-right: 0;
+}
+
+/* Center 行と Extents 行の間にフィールド行間ぶんの隙間を取る */
+.dennoko-root .unity-bounds-field .unity-composite-field,
+.dennoko-root .unity-bounds-int-field .unity-composite-field {
+    min-width: 0;
+    flex-shrink: 0;
+    margin-top: 0;
+    margin-bottom: 2px;
+    margin-left: 0;
+    margin-right: 0;
+}
+
+/* Center / Extents のサブラベル
+   ⚠ ビルトイン USS の padding-left / margin が残ると、固定幅の中が空白で埋まり
+   文字が右へはみ出して X ラベルと重なる (CXen / EXxte のように見える)。
+   幅は 44px + 10px 文字に抑えて X/Y/Z の入力欄を広く取り、余白はすべて明示的に打ち消す。 */
+.dennoko-root .unity-bounds-field .unity-composite-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-field__center-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-field__extents-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-int-field .unity-composite-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-int-field__position-field > .unity-base-field__label,
+.dennoko-root .unity-bounds-int-field__size-field > .unity-base-field__label {
+    min-width: 44px;
+    width: 44px;
+    max-width: 44px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--dennoko-text-tertiary);
+    padding: 0 4px 0 0;
+    margin: 0;
+    -unity-text-align: middle-left;
+}
+
 /* ─── ④ トグル (Toggle) のチェックボックスリセット ────────
    ⚠ エディタスキンのチェック画像は「箱 + チェック」が一体のため、
    tint (乗算) すると箱ごと暗く塗り潰されてしまう。
-   箱込み画像は破棄して中の背景を白 (accent) に固定し、
-   チェックマークにはグリフのみのビルトインアイコンを明示指定する。 */
+   箱込み画像は破棄して背景色で箱を描き、チェックマークには
+   グリフのみのビルトインアイコンを明示指定する。
+   OFF = 暗色の箱 + 枠線のみ / ON = accent (白) 塗り + 暗色チェック。 */
 
-/* Toggle の入力コンテナ (.unity-toggle__input) は .unity-base-field__input でも
-   あるため、③の入力フィールド装飾がそのまま乗り、チェックボックス + ラベル全体が
-   入力欄のような箱で囲まれてしまう。
-   ⚠ トグルは「入力欄」ではなくテキスト行として見せる。囲みは付けない。
-   :hover / :focus も併記するのは、③の疑似クラス付きセレクタ (0,4,0) のほうが
-   詳細度が高く、素の打ち消し (0,3,0) だけではホバー時に負けるため。 */
+.dennoko-root .unity-toggle {
+    min-height: 20px;
+    margin-top: 1px;
+    margin-bottom: 1px;
+}
+
 .dennoko-root .unity-toggle .unity-base-field__input,
 .dennoko-root .unity-toggle:hover .unity-base-field__input,
 .dennoko-root .unity-toggle:focus .unity-base-field__input,
@@ -220,24 +595,27 @@
     background-color: transparent;
     border-color: transparent;
     border-width: 0;
+    min-height: 0;
     padding: 0;
+    align-items: center;
 }
 
-/* Toggle の text は .unity-base-field__input の「内側」に Label として生成される。
-   ⚠ ③で内側のテキスト要素にボックススタイル (背景・枠・角丸・パディング) を
-   足すと、ラベル文字が箱で囲まれる。③は color のみに留めること。
-   ここでは念のため打ち消しつつ、チェックボックスとの間隔だけを与える。 */
 .dennoko-root .unity-toggle .unity-toggle__text {
     background-color: transparent;
     border-color: transparent;
     border-width: 0;
     border-radius: 0;
     padding: 0;
-    margin-left: 4px;
+    margin: 0 0 0 5px;
+    font-size: 11px;
+    -unity-text-align: middle-left;
 }
 
+/* OFF: 14px 角のシャープな暗色の箱 + 枠線のみ */
 .dennoko-root .unity-toggle .unity-toggle__checkmark {
-    background-color: var(--dennoko-accent); /* 中の背景は白で固定 */
+    width: 14px;
+    height: 14px;
+    background-color: var(--dennoko-surface-0);
     background-image: none;                  /* スキンの箱込み画像を破棄 */
     border-color: var(--dennoko-outline);
     border-width: 1px;
@@ -245,48 +623,124 @@
 }
 
 .dennoko-root .unity-toggle:hover .unity-toggle__checkmark {
-    /* 背景は白のままにし、ホバーは枠線の明度で表現する */
-    border-color: var(--dennoko-text-tertiary);
+    border-color: var(--dennoko-outline-hover);
 }
 
+/* ON: 白塗り + 暗色のチェックグリフ */
 .dennoko-root .unity-toggle:checked .unity-toggle__checkmark {
-    /* チェックグリフのみのアイコンをダークグレー tint (乗算) で重ねる。
-       白背景 × ダークグレーなのでテーマ非依存で自然に視認できる。 */
+    background-color: var(--dennoko-accent);
+    border-color: var(--dennoko-accent);
     background-image: resource("d_checkmark");
-    -unity-background-image-tint-color: var(--dennoko-surface-2);
+    -unity-background-image-tint-color: var(--dennoko-checkmark);
+    background-size: 80% 80%;
+}
+
+/* ─── ④-b ラジオボタン (RadioButton / RadioButtonGroup) ───────
+   Toggle と同じく入力欄の箱を打ち消し、丸いインジケーターだけを描く。 */
+
+.dennoko-root .unity-radio-button {
+    min-height: 20px;
+    margin-top: 1px;
+    margin-bottom: 1px;
+}
+
+/* RadioButtonGroup のメインラベルは 1 行目の選択肢の高さ (20px) に揃える */
+.dennoko-root .unity-radio-button-group > .unity-base-field__label {
+    align-self: flex-start;
+    height: 20px;
+    padding-top: 0;
+    padding-bottom: 0;
+    -unity-text-align: middle-left;
+}
+
+.dennoko-root .unity-radio-button-group > .unity-base-field__input,
+.dennoko-root .unity-radio-button-group:hover > .unity-base-field__input,
+.dennoko-root .unity-radio-button-group:focus > .unity-base-field__input,
+.dennoko-root .unity-radio-button .unity-base-field__input,
+.dennoko-root .unity-radio-button:hover .unity-base-field__input,
+.dennoko-root .unity-radio-button:focus .unity-base-field__input,
+.dennoko-root .unity-radio-button .unity-base-field__input:focus,
+.dennoko-root .unity-base-field:hover .unity-radio-button .unity-base-field__input {
+    background-color: transparent;
+    border-color: transparent;
+    border-width: 0;
+    min-height: 0;
+    padding: 0;
+    align-items: center;
+}
+
+.dennoko-root .unity-radio-button .unity-radio-button__text {
+    margin: 0 0 0 5px;
+    padding: 0;
+    font-size: 11px;
+    -unity-text-align: middle-left;
+}
+
+/* OFF: 暗色の丸 + 枠線 */
+.dennoko-root .unity-radio-button .unity-radio-button__checkmark-background {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    border-radius: 7px;
+    border-width: 1px;
+    border-color: var(--dennoko-outline);
+    background-color: var(--dennoko-surface-0);
+    background-image: none;
+    justify-content: center;
+    align-items: center;
+}
+
+.dennoko-root .unity-radio-button:hover .unity-radio-button__checkmark-background {
+    border-color: var(--dennoko-outline-hover);
+}
+
+.dennoko-root .unity-radio-button .unity-radio-button__checkmark {
+    width: 6px;
+    height: 6px;
+    margin: 0;
+    border-radius: 3px;
+    background-image: none;
+    background-color: transparent;
+}
+
+/* ON: 白い丸 + 暗色の点 */
+.dennoko-root .unity-radio-button:checked .unity-radio-button__checkmark-background {
+    background-color: var(--dennoko-accent);
+    border-color: var(--dennoko-accent);
+}
+
+.dennoko-root .unity-radio-button:checked .unity-radio-button__checkmark {
+    background-color: var(--dennoko-checkmark);
 }
 
 /* ─── ⑤ フォールドアウト (Foldout) ───────────────────────── */
 
 .dennoko-root .unity-foldout__toggle {
     background-color: var(--dennoko-surface-1);
-    margin: 2px 0;
-    padding: 4px;
+    margin: 1px 0;
+    padding: 2px 4px;
+    min-height: 20px;
     border-radius: 4px;
 }
 
 .dennoko-root .unity-foldout__content {
-    margin-left: 15px;
-    padding: 6px;
+    margin-left: 12px;
+    padding: 4px 0 4px 8px;
     border-left-width: 1px;
-    border-left-color: var(--dennoko-outline);
+    border-left-color: var(--dennoko-outline-subtle);
 }
 
 /* Foldout の展開矢印は Toggle のチェックマーク要素を流用しているため、
-   上記④のチェックボックス装飾 (背景・枠・checked 時の白背景) を打ち消し、
-   矢印画像の色だけを固定する。
-   ⚠ このリセットがないと、矢印が白い四角の箱として表示されてしまう。 */
+   上記④のチェックボックス装飾を打ち消し、矢印画像の色だけを固定する。 */
 .dennoko-root .unity-foldout__toggle .unity-toggle__checkmark,
 .dennoko-root .unity-foldout__toggle:checked .unity-toggle__checkmark,
 .dennoko-root .unity-foldout__toggle:hover .unity-toggle__checkmark {
     background-color: transparent;
     border-width: 0;
+    background-size: initial;
     -unity-background-image-tint-color: var(--dennoko-text-secondary);
 }
 
-/* ④ で箱込みのチェック画像を破棄した (background-image: none) ため、
-   展開矢印はビルトインアイコンを明示指定して復元する。
-   d_ 系を指定することでテーマ非依存にもなる。※アイコン名は要実機確認 */
 .dennoko-root .unity-foldout__toggle .unity-toggle__checkmark {
     background-image: resource("IN foldout");
 }
@@ -295,51 +749,130 @@
     background-image: resource("IN foldout on");
 }
 
-/* ─── ⑥ スライダー ───────────────────────────────────────── */
+/* ─── ⑥ スライダー ─────────────────────────────────────────
+   視認性の高い 4px トラック (--dennoko-outline-hover: #5a5a5a) +
+   正円つまみ + 48px のコンパクトな数値入力欄。
+   ※ 中心軸は drag-container の上から 9px (掴んだときの 18px の青い輪 = dragger-border の中心)。
+      Unity 2022.3 の既定はトラックが top: 6px (相対ずらし)、つまみはトラックの下に続けて並ぶ (relative)。
+      そのため top を 0 に戻し、トラックは margin-top: 7px (7 + 2 = 9px)、
+      つまみは margin-top: -7px (トラック下端 11px − 7px = 4px、4 + 5 = 9px) で中心を揃える。 */
 
+.dennoko-root .unity-base-slider > .unity-base-field__input,
+.dennoko-root .unity-base-slider:hover > .unity-base-field__input,
+.dennoko-root .unity-base-slider:focus > .unity-base-field__input,
+.dennoko-root .unity-min-max-slider > .unity-base-field__input,
+.dennoko-root .unity-min-max-slider:hover > .unity-base-field__input,
+.dennoko-root .unity-min-max-slider:focus > .unity-base-field__input {
+    background-color: transparent;
+    border-color: transparent;
+    border-width: 0;
+    min-height: 20px;
+}
+
+.dennoko-root .unity-base-slider--horizontal > .unity-base-field__input {
+    padding: 0 2px;
+    align-items: center;
+}
+
+.dennoko-root .unity-base-slider--vertical {
+    align-items: flex-start;
+}
+
+.dennoko-root .unity-base-slider--vertical > .unity-base-field__input {
+    padding: 0;
+}
+
+.dennoko-root .unity-base-slider {
+    min-height: 20px;
+}
+
+/* 右端の数値入力欄を 48px 固定にしてスライダーの可動域を広げる */
+.dennoko-root .unity-base-slider__text-field {
+    width: 48px;
+    flex-shrink: 0;
+    margin: 0 0 0 6px;
+}
+
+.dennoko-root .unity-base-slider__text-field > .unity-base-field__input {
+    padding: 1px 4px;
+    min-height: 20px;
+}
+
+/* トラック (棒部分): カード背景 (#1e1e1e) の上で明確に視認できるよう
+   --dennoko-outline-hover (#5a5a5a) のソリッドな 4px バーにする */
 .dennoko-root .unity-base-slider__tracker {
-    background-color: var(--dennoko-surface-2);
-    border-color: var(--dennoko-outline);
+    background-color: var(--dennoko-outline-hover);
+    border-color: var(--dennoko-outline-hover);
     border-width: 1px;
     border-radius: 2px;
 }
 
+.dennoko-root .unity-base-slider--horizontal .unity-base-slider__tracker {
+    top: 0;
+    height: 4px;
+    margin-top: 7px;
+    margin-bottom: 0;
+}
+
+/* 縦: トラックは absolute (既定 left: 4px)。つまみは x = 0〜10px (中心 5px) なので
+   left: 0 + margin-left: 3px (3 + 2 = 5px) で揃える */
+.dennoko-root .unity-base-slider--vertical .unity-base-slider__tracker {
+    left: 0;
+    width: 4px;
+    margin-left: 3px;
+    margin-right: 0;
+}
+
+.dennoko-root .unity-base-slider--horizontal .unity-base-slider__dragger {
+    margin-top: -7px;
+}
+
+/* 中身の高さ (14px) に縮むと行の中心より下に寄るため、青い輪と同じ 18px に固定して行の中心に置く */
+.dennoko-root .unity-base-slider--horizontal .unity-base-slider__drag-container {
+    height: 18px;
+}
+
+/* 正円のシャープなつまみ (10px) */
 .dennoko-root .unity-base-slider__dragger {
-    background-color: var(--dennoko-text-secondary);
-    border-color: var(--dennoko-outline);
+    background-color: var(--dennoko-text-primary);
+    border-color: var(--dennoko-surface-0);
     border-width: 1px;
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 .dennoko-root .unity-base-slider__dragger:hover {
-    background-color: var(--dennoko-text-primary);
+    background-color: var(--dennoko-accent);
+    border-color: var(--dennoko-selection-border);
 }
 
-/* MinMaxSlider (範囲スライダー)
-   ⚠ スキンの範囲バーは 9-slice 画像のため、引き伸ばすと両端の色が
-   間延びして見える。画像を破棄してフラットな塗りに置き換える。 */
+/* MinMaxSlider (範囲スライダー) */
 .dennoko-root .unity-min-max-slider .unity-base-field__input,
 .dennoko-root .unity-min-max-slider__input {
-    height: 28px;
-    padding-top: 5px;
-    padding-bottom: 5px;
+    height: 20px;
+    min-height: 20px;
+    padding-top: 1px;
+    padding-bottom: 1px;
 }
 
+/* 既定の top: 6px を消し、つまみ (absolute, margin-top: 4px, 10px 高 → 中心 9px) に揃える */
 .dennoko-root .unity-min-max-slider__tracker {
-    background-color: var(--dennoko-surface-2);
-    border-color: var(--dennoko-outline);
+    top: 0;
+    height: 4px;
+    margin-top: 7px;
+    margin-bottom: 0;
+    background-color: var(--dennoko-outline-hover);
+    border-color: var(--dennoko-outline-hover);
     border-width: 1px;
     border-radius: 2px;
 }
 
 .dennoko-root .unity-min-max-slider__dragger {
     background-image: none;
-    background-color: var(--dennoko-text-secondary);
+    background-color: var(--dennoko-selection-border);
     border-width: 0;
     border-radius: 2px;
 }
 
-/* 両端のつまみは範囲部分より明るくして掴める位置を示す */
 .dennoko-root .unity-min-max-slider__min-thumb,
 .dennoko-root .unity-min-max-slider__max-thumb {
     background-image: none;
@@ -348,76 +881,186 @@
     border-radius: 2px;
 }
 
+/* ProgressBar: コンパクトな 18px 高 + 角丸 + 控えめな枠線 */
+.dennoko-root .unity-progress-bar__background {
+    height: 18px;
+    min-height: 18px;
+    background-color: var(--dennoko-surface-0);
+    border-width: 1px;
+    border-color: var(--dennoko-outline-subtle);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.dennoko-root .unity-progress-bar__progress {
+    background-color: var(--dennoko-progress-fill);
+    border-radius: 0;
+}
+
+.dennoko-root .unity-progress-bar__title {
+    color: var(--dennoko-text-primary);
+    font-size: 10px;
+}
+
 /* ─── ⑦ スクロールバー ───────────────────────────────────── */
 
 .dennoko-root .unity-scroller {
     background-color: var(--dennoko-surface-0);
-    border-color: var(--dennoko-outline);
+    border-color: var(--dennoko-outline-subtle);
 }
 
-/* ⚠ tint は乗算 — Light テーマで矢印が見えない場合は
-   ドロップダウン矢印と同様に background-image へ d_ 系アイコンを明示指定する */
 .dennoko-root .unity-scroller__low-button,
 .dennoko-root .unity-scroller__high-button {
     background-color: var(--dennoko-surface-1);
-    border-color: var(--dennoko-outline);
+    border-color: var(--dennoko-outline-subtle);
     -unity-background-image-tint-color: var(--dennoko-text-tertiary);
 }
 
-/* ⚠ スクロールバー内部の要素にボタン・入力欄・スライダーの汎用リセット
-   (padding / margin / 枠線) を波及させない。波及するとレーン幅を超えて
-   要素がはみ出し、縦バーでは中身が右寄りに、横バーでは上下ずれとして
-   現れる。詳細度 (0,3,0) で汎用リセット (0,2,0) を打ち消す。 */
 .dennoko-root .unity-scroller .unity-button {
     padding: 0;
     margin: 0;
     border-width: 0;
     border-radius: 0;
+    min-height: 0;
 }
 
 .dennoko-root .unity-scroller .unity-base-field__input {
     background-color: transparent;
     border-width: 0;
+    min-height: 0;
     padding: 0;
 }
 
-.dennoko-root .unity-scroller .unity-base-slider__tracker {
+.dennoko-root .unity-scroller .unity-base-slider {
+    min-height: 0;
+}
+
+.dennoko-root .unity-scroller .unity-base-slider__tracker,
+.dennoko-root .unity-scroller .unity-base-slider--horizontal .unity-base-slider__tracker,
+.dennoko-root .unity-scroller .unity-base-slider--vertical .unity-base-slider__tracker {
     background-color: var(--dennoko-surface-0);
     border-width: 0;
     border-radius: 0;
+    margin: 0;
+    width: auto;
+    height: auto;
 }
 
+/* margin: 0 は上のスライダー用 margin-top: -7px をスクロールバーで打ち消すため */
 .dennoko-root .unity-scroller .unity-base-slider__dragger {
+    background-color: var(--dennoko-outline);
     border-width: 0;
     border-radius: 4px;
+    margin: 0;
+}
+
+.dennoko-root .unity-scroller .unity-base-slider__dragger:hover {
+    background-color: var(--dennoko-text-tertiary);
+}
+
+/* ─── ⑧ リスト (ListView / TreeView 等の CollectionView) ───── */
+
+.dennoko-root .unity-collection-view .unity-collection-view__item {
+    background-color: transparent;
+}
+
+.dennoko-root .unity-collection-view .unity-collection-view__item--alternative-background {
+    background-color: var(--dennoko-list-alt-bg);
+}
+
+.dennoko-root .unity-collection-view .unity-collection-view__item:hover {
+    background-color: var(--dennoko-hover-overlay);
+}
+
+.dennoko-root .unity-collection-view .unity-collection-view__item.unity-collection-view__item--selected,
+.dennoko-root .unity-collection-view:focus .unity-collection-view__item.unity-collection-view__item--selected {
+    background-color: var(--dennoko-selection-bg);
+}
+
+.dennoko-root .unity-collection-view .unity-collection-view__item--selected,
+.dennoko-root .unity-collection-view .unity-collection-view__item--selected .unity-text-element {
+    color: var(--dennoko-text-primary);
+}
+
+/* ─── ⑨ HelpBox ─────────────────────────────────────────────
+   左辺に 3px のアクセントラインを設け、アイコンを 16px に縮小して
+   モダン・コンパクトなコールアウトにする。 */
+
+.dennoko-root .unity-help-box {
+    background-color: var(--dennoko-surface-2);
+    border-width: 1px;
+    border-left-width: 3px;
+    border-color: var(--dennoko-outline-subtle);
+    border-left-color: var(--dennoko-outline);
+    border-radius: 4px;
+    min-height: 24px;
+    padding: 4px 8px;
+    margin: 2px 0 4px 0;
+    align-items: center;
+}
+
+.dennoko-root .unity-help-box__icon {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    margin-right: 6px;
+}
+
+.dennoko-root .unity-help-box .unity-text-element {
+    font-size: 11px;
+}
+
+.dennoko-root .unity-help-box.dennoko-helpbox--info {
+    background-color: var(--dennoko-status-info-bg);
+    border-color: var(--dennoko-outline-subtle);
+    border-left-color: var(--dennoko-semantic-info);
+}
+
+.dennoko-root .unity-help-box.dennoko-helpbox--warning {
+    background-color: var(--dennoko-status-warning-bg);
+    border-color: var(--dennoko-outline-subtle);
+    border-left-color: var(--dennoko-semantic-warning);
+}
+
+.dennoko-root .unity-help-box.dennoko-helpbox--error {
+    background-color: var(--dennoko-status-error-bg);
+    border-color: var(--dennoko-semantic-error);
+    border-left-color: var(--dennoko-semantic-error-text);
+}
+
+.dennoko-root .unity-help-box.dennoko-helpbox--error .unity-text-element {
+    color: var(--dennoko-status-error-text);
 }
 
 /* ─── フローティングデザイン用セマンティッククラス ─────────
-   以下は Unity ビルトインではなく dennokoworks 独自のクラス。
-   UXML 側で class 属性として付与して使う。
+   【規約】セレクタは必ず .dennoko-root を前置する。 */
 
-   【規約】セレクタは必ず .dennoko-root を前置する。
-   前置しない (0,1,0) と、上記の汎用リセット
-   .dennoko-root .unity-text-element / .unity-button (0,2,0) に
-   color 宣言が詳細度で負けてしまう。USS に !important は存在しないため、
-   「.dennoko-root 前置 (0,2,0) + リセットより後方に定義 (同数は後勝ち)」で勝たせる。 */
-
-/* セクションカード */
+/* セクションカード: 枠線を subtle (#2b2b2b) に抑え、角丸 6px でシャープに引き締める */
 .dennoko-root .dennoko-card {
     background-color: var(--dennoko-surface-1);
-    border-color: var(--dennoko-outline);
+    border-color: var(--dennoko-outline-subtle);
     border-width: 1px;
-    border-radius: 8px;
-    padding: 12px;
-    margin: 0 8px 10px 8px;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin: 0 8px 8px 8px;
 }
 
 /* カード内ヘッダー */
 .dennoko-root .dennoko-card-header {
     border-bottom-width: 1px;
-    border-bottom-color: var(--dennoko-outline);
-    padding-bottom: 6px;
-    margin-bottom: 10px;
+    border-bottom-color: var(--dennoko-outline-subtle);
+    padding-bottom: 5px;
+    margin-bottom: 8px;
+}
+
+/* カード内サブ見出し (グループの区切り) */
+.dennoko-root .dennoko-subhead {
+    font-size: 10px;
+    -unity-font-style: bold;
+    color: var(--dennoko-text-tertiary);
+    margin-top: 8px;
+    margin-bottom: 4px;
 }
 
 /* トグル付きヘッダー (Toggle と Reset ボタンを横並びにする) */
@@ -430,28 +1073,39 @@
 /* トグル付きヘッダー内のボタン (Reset 等) はウィンドウ縮小時にも潰さない */
 .dennoko-root .dennoko-toggle-header > .unity-button {
     flex-shrink: 0;
+    min-height: 20px;
+    padding: 1px 8px;
+    font-size: 10px;
 }
 
-/* ウィンドウヘッダー行
-   (固定クロームには flex-shrink: 0 を付け、ウィンドウ縮小時は
-   .dennoko-scroll のスクロール領域だけが縮むようにする) */
+/* トグル付きセクションの折りたたみ */
+.dennoko-root .dennoko-toggle-section--collapsed > .dennoko-toggle-section__content {
+    display: none;
+}
+
+.dennoko-root .dennoko-toggle-section--collapsed > .dennoko-card-header {
+    border-bottom-width: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
+}
+
+/* ウィンドウヘッダー行 */
 .dennoko-root .dennoko-header {
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 12px;
+    padding: 6px 12px;
     flex-shrink: 0;
 }
 
 /* ウィンドウタイトル */
 .dennoko-root .dennoko-title {
-    font-size: 14px;
+    font-size: 13px;
     -unity-font-style: bold;
     color: var(--dennoko-text-primary);
 }
 
-/* ヘッダー左側: タイトル + バージョンをまとめる行
-   (references/version-check-guide.md 参照) */
+/* ヘッダー左側: タイトル + バージョンをまとめる行 */
 .dennoko-root .dennoko-header-titlegroup {
     flex-direction: row;
     align-items: center;
@@ -463,20 +1117,36 @@
     margin-left: 6px;
     color: var(--dennoko-text-tertiary);
 }
-/* 更新あり (目立たせるため鮮やかな緑) */
 .dennoko-root .dennoko-version-label--update {
     color: var(--dennoko-semantic-success);
     -unity-font-style: bold;
 }
-/* 最新版の取得に失敗 */
 .dennoko-root .dennoko-version-label--error {
     color: var(--dennoko-semantic-warning);
 }
 
-/* セクション見出し (大文字英字を想定した小さめの見出し)
-   ※ Toggle に付与した場合、文字は子要素 (.unity-toggle__text) にあり、
-   汎用リセット .dennoko-root .unity-text-element が子要素に「直接」マッチして
-   継承色より優先されるため、子孫セレクタも併記して色を届かせる */
+/* バージョン再確認ボタン (↻) */
+.dennoko-root .dennoko-version-reload-button {
+    width: 18px;
+    height: 18px;
+    min-height: 0;
+    margin: 0 0 0 4px;
+    padding: 0;
+    font-size: 12px;
+    -unity-text-align: middle-center;
+    color: var(--dennoko-text-tertiary);
+    background-color: transparent;
+    border-width: 1px;
+    border-color: transparent;
+    border-radius: 4px;
+}
+.dennoko-root .dennoko-version-reload-button:hover {
+    color: var(--dennoko-text-primary);
+    background-color: var(--dennoko-surface-2);
+    border-color: var(--dennoko-outline);
+}
+
+/* セクション見出し (大文字英字を想定した小さめの見出し) */
 .dennoko-root .dennoko-section-title,
 .dennoko-root .dennoko-section-title .unity-text-element {
     font-size: 10px;
@@ -487,44 +1157,99 @@
 /* セパレーター (水平線) */
 .dennoko-root .dennoko-separator {
     height: 1px;
-    background-color: var(--dennoko-outline);
-    margin: 4px 0;
+    background-color: var(--dennoko-outline-subtle);
+    margin: 0 0 6px 0;
     flex-shrink: 0;
 }
 
-/* メインのスクロール領域 (ScrollView に付与する)
-   ウィンドウ縮小時はこの領域だけが縮む */
+/* メインのスクロール領域 (ScrollView に付与する) */
 .dennoko-root .dennoko-scroll {
     flex-grow: 1;
     flex-shrink: 1;
 }
 
-/* フッター (アクションボタン領域)。.dennoko-card と併用する */
+/* 横並び行 (伸びる入力欄 + 固定幅ボタン等)。折り返さない */
+.dennoko-root .dennoko-hrow {
+    flex-direction: row;
+    align-items: center;
+}
+
+/* 伸びて縮む子要素 */
+.dennoko-root .dennoko-col-grow {
+    flex-grow: 1;
+    flex-shrink: 1;
+    overflow: hidden;
+}
+
+/* メインのスクロールバーとカード右端の間に余白を作る */
+.dennoko-root .dennoko-scroll > .unity-scroll-view__content-and-vertical-scroll-container > .unity-scroll-view__vertical-scroller {
+    margin-left: 4px;
+}
+
+/* フッター (アクションボタン領域) */
 .dennoko-root .dennoko-footer {
+    flex-shrink: 0;
+    flex-direction: row;
+    align-items: center;
+    padding: 6px 6px;
+    border-top-width: 1px;
+    border-top-color: var(--dennoko-outline-subtle);
+    background-color: var(--dennoko-surface-0);
+}
+
+.dennoko-root .dennoko-footer > .unity-button {
+    height: 26px;
+}
+
+.dennoko-root .dennoko-footer > .unity-button.dennoko-button-secondary {
+    width: 88px;
     flex-shrink: 0;
 }
 
-/* ツールバー行
-   ⚠ カード上端に密着させる場合、カードの padding (12px) と角丸 (8px) を
-   はみ出す。カード側に overflow: hidden を付けるか、ツールバー側に
-   margin: -12px -12px 8px -12px; border-radius: 8px 8px 0 0; を指定する */
+.dennoko-root .dennoko-footer > .unity-button.dennoko-button-primary {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+/* ツールバー行 */
 .dennoko-root .dennoko-toolbar {
     flex-direction: row;
     align-items: center;
     background-color: var(--dennoko-surface-2);
-    padding: 4px 6px;
+    padding: 3px 6px;
 }
 
-/* ステータスバー */
+.dennoko-root .dennoko-toolbar > .unity-button {
+    background-color: transparent;
+    border-color: transparent;
+    min-height: 20px;
+    margin: 0 1px;
+    padding: 2px 8px;
+}
+
+.dennoko-root .dennoko-toolbar > .unity-button:hover {
+    background-color: var(--dennoko-surface-3);
+    border-color: transparent;
+}
+
+.dennoko-root .dennoko-toolbar > .unity-button.dennoko-button-active {
+    background-color: var(--dennoko-selection-bg);
+    border-color: var(--dennoko-selection-border);
+}
+
+.dennoko-root .dennoko-toolbar > .unity-button.dennoko-button-active:hover {
+    background-color: var(--dennoko-selection-bg-hover);
+}
+
+/* ステータスバー (枠線は付けず、背景の明度差だけで区切る) */
 .dennoko-root .dennoko-status {
     background-color: var(--dennoko-surface-1);
-    border-color: var(--dennoko-outline);
-    border-width: 1px;
+    border-width: 0;
     border-radius: 4px;
     color: var(--dennoko-text-secondary);
-    font-size: 11px;
-    padding: 5px 8px;
-    margin: 4px 8px;
+    font-size: 10px;
+    padding: 4px 8px;
+    margin: 0 8px 6px 8px;
     white-space: normal;
     flex-shrink: 0;
 }
@@ -539,85 +1264,297 @@
     color: var(--dennoko-status-error-text);
 }
 
-/* Inspector 用ルート:
-   InspectorElement 既定の左右余白を打ち消し、Surface0 を全幅に塗る。
-   ルート要素自身に dennoko-root と一緒に付与するため、連結セレクタで書く
-   (子孫セレクタではない点に注意)。
-   余白量は Unity バージョンによって異なるため、はみ出し・隙間が出る場合は
-   margin の値を調整すること。 */
-.dennoko-root.dennoko-inspector-root {
-    margin-left: -15px;
-    margin-right: -6px;
-    padding: 8px 12px;
-}
+/* ─── ⑪ 標準ヘッダーと標準フッター (⑩ :disabled より前に置く) ──
+   ウィンドウの上下に固定する標準の枠 (references/window-guide.md)。
+     上: トップバー .dennoko-appbar (ツール名・バージョン・↻ | 言語・マニュアル・設定 ⋮)
+     下: 出力ドック .dennoko-output (任意) → フッター .dennoko-footer → ステータス .dennoko-status
+   旧ヘッダー .dennoko-header は既存ツールのために残している。 */
 
-/* ─── FastCurvatureBaker 固有スタイル ─────────────────────── */
+/* アイコンボタン (20px 角) */
 
-/* バージョン再確認ボタン */
-.dennoko-root .dennoko-version-reload-button {
-    width: 18px;
-    height: 18px;
-    margin-left: 4px;
+.dennoko-root .unity-button.dennoko-icon-button {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 0;
+    margin: 0 1px;
     padding: 0;
-    font-size: 12px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 1px;
+    border-color: rgba(0, 0, 0, 0);
+    border-radius: 4px;
+    font-size: 11px;
     color: var(--dennoko-text-tertiary);
 }
 
-.dennoko-root .dennoko-version-reload-button:hover {
+.dennoko-root .unity-button.dennoko-icon-button:hover {
+    background-color: var(--dennoko-surface-2);
+    border-color: var(--dennoko-outline);
     color: var(--dennoko-text-primary);
 }
 
-/* ターゲット行 */
-.dennoko-root .dennoko-target-row {
-    flex-direction: row;
-    align-items: center;
-    margin-bottom: 4px;
+.dennoko-root .unity-button.dennoko-icon-button.dennoko-button-active,
+.dennoko-root .unity-button.dennoko-icon-button.dennoko-button-active:hover {
+    background-color: var(--dennoko-selection-bg);
+    border-color: var(--dennoko-selection-border);
 }
 
-.dennoko-root .dennoko-target-row-field {
-    flex-grow: 1;
+/* ボタンの中に置くアイコン画像 (DennokoIcons が子要素として追加する) */
+.dennoko-root .dennoko-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    -unity-background-scale-mode: scale-to-fit;
+}
+
+/* トップバー (.dennoko-appbar) */
+
+.dennoko-root .dennoko-appbar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    min-height: 32px;
+    padding: 4px 6px 4px 12px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--dennoko-outline-subtle);
+}
+
+.dennoko-root .dennoko-appbar__title {
+    flex-direction: row;
+    align-items: center;
     flex-shrink: 1;
+    min-width: 0;
     overflow: hidden;
 }
 
-.dennoko-root .dennoko-target-row-remove {
-    width: 22px;
-    height: 22px;
-    margin: 0 0 0 4px;
-    padding: 0;
-    font-size: 11px;
+/* 狭いウィンドウではツール名だけを省略表示にし、右側のアイコンは縮めない */
+.dennoko-root .dennoko-appbar__title > .dennoko-title {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dennoko-root .dennoko-appbar__title > .dennoko-version-label {
     flex-shrink: 0;
-    color: var(--dennoko-text-tertiary);
 }
 
-.dennoko-root .dennoko-target-row-remove:hover {
-    color: var(--dennoko-semantic-error);
-    border-color: var(--dennoko-semantic-error);
+.dennoko-root .dennoko-appbar__title > .unity-button.dennoko-icon-button {
+    margin-left: 4px;
 }
 
-/* ドロップエリア */
-.dennoko-root .dennoko-drop-area {
-    border-width: 1px;
-    border-color: var(--dennoko-outline);
-    border-radius: 4px;
-    padding: 8px;
-    margin-top: 4px;
-    margin-bottom: 4px;
+.dennoko-root .dennoko-appbar__actions {
+    flex-direction: row;
     align-items: center;
-    justify-content: center;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+
+/* 言語切替: 切替先の言語を表示する文字ボタン 1 つ */
+.dennoko-root .unity-button.dennoko-appbar-lang {
+    width: 32px;
+    height: 20px;
+    min-height: 0;
+    margin: 0 2px 0 0;
+    padding: 0;
+    font-size: 10px;
+    -unity-font-style: bold;
+    color: var(--dennoko-text-secondary);
+    background-color: rgba(0, 0, 0, 0);
+    border-color: var(--dennoko-outline);
+}
+
+.dennoko-root .unity-button.dennoko-appbar-lang:hover {
+    background-color: var(--dennoko-surface-2);
+    color: var(--dennoko-text-primary);
+}
+
+/* Inspector 用の細い版 (ツール名を出さない) */
+.dennoko-root .dennoko-appbar.dennoko-appbar--compact {
+    min-height: 26px;
+    padding: 2px 2px 4px 2px;
+}
+
+/* バージョン表示: 更新ありのときだけクリックできる / 確認中 */
+.dennoko-root .dennoko-version-label--clickable {
+    cursor: link;
+}
+
+.dennoko-root .dennoko-version-label--checking {
+    -unity-font-style: italic;
+}
+
+/* 出力ドック (出力先など 2 行まで。フッターの直上に固定) */
+
+.dennoko-root .dennoko-output {
+    flex-shrink: 0;
+    padding: 6px 8px 2px 10px;
+    border-top-width: 1px;
+    border-top-color: var(--dennoko-outline-subtle);
     background-color: var(--dennoko-surface-0);
 }
 
-.dennoko-root .dennoko-drop-area--dragover {
-    border-color: var(--dennoko-semantic-info);
-    background-color: var(--dennoko-surface-2);
+.dennoko-root .dennoko-output-row {
+    flex-direction: row;
+    align-items: center;
+    min-height: 22px;
 }
 
+.dennoko-root .dennoko-output__label {
+    width: 44px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--dennoko-text-tertiary);
+}
 
-/* 汎用 flex 伸縮 */
-.dennoko-root .dennoko-col-grow {
+.dennoko-root .dennoko-output-row > .unity-text-field {
     flex-grow: 1;
     flex-shrink: 1;
-    overflow: hidden;
+    min-width: 0;
+    margin: 0;
 }
 
+.dennoko-root .unity-button.dennoko-output__action {
+    flex-shrink: 0;
+    width: 56px;
+    margin-right: 0;
+}
+
+/* 出力行の選択肢 (形式など) は文字の幅で並べる。
+   .dennoko-segmented のボタンは flex-basis: 0 (等幅) なので、伸びる親が無い行ではそのままだと幅 0 に潰れる */
+.dennoko-root .dennoko-output-row > .dennoko-segmented {
+    flex-shrink: 0;
+}
+
+.dennoko-root .dennoko-output-row > .dennoko-segmented > .unity-button {
+    flex-grow: 0;
+    flex-basis: auto;
+    min-width: 40px;
+}
+
+.dennoko-root .dennoko-output__chips {
+    flex-direction: row;
+    flex-wrap: wrap;
+    flex-grow: 1;
+}
+
+.dennoko-root .dennoko-spacer {
+    flex-grow: 1;
+    flex-shrink: 1;
+}
+
+/* 出力ドックの直後のフッターは上罫線を重ねない */
+.dennoko-root .dennoko-footer.dennoko-footer--joined {
+    border-top-width: 0;
+}
+
+/* フッターの情報欄 */
+
+.dennoko-root .dennoko-footer__info {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 40%;
+    margin: 0 6px 0 4px;
+    font-size: 10px;
+    color: var(--dennoko-text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dennoko-root .dennoko-footer > .unity-button.dennoko-button-primary {
+    min-width: 96px;
+}
+
+/* ステータスバーの追加状態 */
+
+.dennoko-root .dennoko-status.dennoko-status--warning {
+    background-color: var(--dennoko-status-warning-bg);
+    color: var(--dennoko-semantic-warning);
+}
+
+.dennoko-root .dennoko-status.dennoko-status--busy {
+    background-color: var(--dennoko-status-info-bg);
+    color: var(--dennoko-text-primary);
+}
+
+/* 処理中の進捗線の色。線は DennokoStatus が Label の下端に描く (generateVisualContent)。
+   Label に子要素を足すと文字の高さが測られなくなり、ステータスが余白だけの高さに潰れるため子は使わない */
+.dennoko-root .dennoko-status {
+    --dennoko-status-progress: var(--dennoko-selection-border);
+}
+
+
+/* Inspector 用ルート */
+.dennoko-root.dennoko-inspector-root {
+    margin-left: -15px;
+    margin-right: -6px;
+    padding: 6px 10px;
+}
+
+/* ─── ⑩ 無効状態 (:disabled) ───────────────────────────────── */
+
+.dennoko-root .unity-text-element:disabled,
+.dennoko-root .unity-base-field__input .unity-text-element:disabled,
+.dennoko-root .unity-object-field__input .unity-object-field-display__label:disabled {
+    color: var(--dennoko-text-disabled);
+}
+
+.dennoko-root .unity-base-field:disabled .unity-base-field__input,
+.dennoko-root .unity-base-field:disabled:hover .unity-base-field__input {
+    border-color: var(--dennoko-outline-subtle);
+}
+
+.dennoko-root .unity-base-popup-field:disabled > .unity-base-field__input,
+.dennoko-root .unity-enum-field:disabled > .unity-base-field__input {
+    background-color: var(--dennoko-surface-1);
+}
+
+.dennoko-root .unity-base-field:disabled .unity-base-popup-field__arrow,
+.dennoko-root .unity-base-field:disabled .unity-enum-field__arrow,
+.dennoko-root .unity-base-field:disabled .unity-object-field__selector {
+    -unity-background-image-tint-color: var(--dennoko-text-disabled);
+}
+
+.dennoko-root .unity-toggle:disabled .unity-toggle__checkmark {
+    border-color: var(--dennoko-outline-subtle);
+}
+
+.dennoko-root .unity-toggle:disabled:checked .unity-toggle__checkmark {
+    background-color: var(--dennoko-text-disabled);
+    border-color: var(--dennoko-text-disabled);
+}
+
+.dennoko-root .unity-foldout__toggle:disabled .unity-toggle__checkmark,
+.dennoko-root .unity-foldout__toggle:disabled:checked .unity-toggle__checkmark {
+    background-color: transparent;
+    border-width: 0;
+    -unity-background-image-tint-color: var(--dennoko-text-disabled);
+}
+
+.dennoko-root .unity-radio-button:disabled .unity-radio-button__checkmark-background {
+    border-color: var(--dennoko-outline-subtle);
+}
+
+.dennoko-root .unity-radio-button:disabled:checked .unity-radio-button__checkmark-background {
+    background-color: var(--dennoko-text-disabled);
+    border-color: var(--dennoko-text-disabled);
+}
+
+.dennoko-root .unity-base-slider:disabled .unity-base-slider__tracker,
+.dennoko-root .unity-min-max-slider:disabled .unity-min-max-slider__tracker {
+    background-color: var(--dennoko-outline);
+    border-color: var(--dennoko-outline);
+}
+
+.dennoko-root .unity-base-slider:disabled .unity-base-slider__dragger,
+.dennoko-root .unity-min-max-slider:disabled .unity-min-max-slider__dragger,
+.dennoko-root .unity-min-max-slider:disabled .unity-min-max-slider__min-thumb,
+.dennoko-root .unity-min-max-slider:disabled .unity-min-max-slider__max-thumb {
+    background-color: var(--dennoko-text-disabled);
+}
