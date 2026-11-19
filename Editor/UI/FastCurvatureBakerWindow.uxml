@@ -42,10 +42,14 @@
             <ui:Label name="hard-edges-card-title" text="ハードエッジ (エッジ検出)" class="dennoko-section-title dennoko-card-header" />
             <ui:FloatField label="エッジ幅 (m)" name="edge-width-field" />
             <ui:Slider label="エッジ強度" name="edge-strength-slider" low-value="0" high-value="4" show-input-field="true" />
+            <ui:VisualElement name="sharp-convex-container">
+                <ui:Slider label="最小角角度 (°)" name="sharp-min-angle-slider" low-value="5" high-value="150" show-input-field="true" />
+                <ui:FloatField label="最大ベベル幅 (m)" name="max-bevel-width-field" />
+            </ui:VisualElement>
         </ui:VisualElement>
 
         <!-- スムース曲面設定カード -->
-        <ui:VisualElement class="dennoko-card">
+        <ui:VisualElement name="smooth-surfaces-card" class="dennoko-card">
             <ui:Label name="smooth-surfaces-card-title" text="曲面設定 (曲面検出)" class="dennoko-section-title dennoko-card-header" />
             <ui:FloatField label="曲面計測半径 (m)" name="radius-field" />
             <ui:Slider label="曲面強度" name="strength-slider" low-value="0" high-value="4" show-input-field="true" />

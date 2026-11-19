@@ -55,7 +55,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private Label _hardEdgesCardTitle;
         private FloatField _edgeWidthField;
         private Slider _edgeStrengthSlider;
+        private VisualElement _sharpConvexContainer;
+        private Slider _sharpMinAngleSlider;
+        private FloatField _maxBevelWidthField;
 
+        private VisualElement _smoothSurfacesCard;
         private Label _smoothSurfacesCardTitle;
         private FloatField _radiusField;
         private Slider _strengthSlider;
@@ -234,7 +238,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _hardEdgesCardTitle = root.Q<Label>("hard-edges-card-title");
             _edgeWidthField = root.Q<FloatField>("edge-width-field");
             _edgeStrengthSlider = root.Q<Slider>("edge-strength-slider");
+            _sharpConvexContainer = root.Q<VisualElement>("sharp-convex-container");
+            _sharpMinAngleSlider = root.Q<Slider>("sharp-min-angle-slider");
+            _maxBevelWidthField = root.Q<FloatField>("max-bevel-width-field");
 
+            _smoothSurfacesCard = root.Q<VisualElement>("smooth-surfaces-card");
             _smoothSurfacesCardTitle = root.Q<Label>("smooth-surfaces-card-title");
             _radiusField = root.Q<FloatField>("radius-field");
             _strengthSlider = root.Q<Slider>("strength-slider");
@@ -316,6 +324,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (_edgeStrengthSlider != null)
                 _edgeStrengthSlider.value = _settings.EdgeStrength;
 
+            if (_sharpMinAngleSlider != null)
+                _sharpMinAngleSlider.value = _settings.SharpMinAngle;
+
+            if (_maxBevelWidthField != null)
+                _maxBevelWidthField.value = _settings.MaxBevelWidth;
+
             if (_radiusField != null)
                 _radiusField.value = _settings.Radius;
 
@@ -339,6 +353,30 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             if (_overwriteToggle != null)
                 _overwriteToggle.value = _settings.OverwriteExisting;
+
+            UpdateModeVisibility();
+        }
+
+        private void UpdateModeVisibility()
+        {
+            bool isSharp = _settings.Mode == CurvatureBakeMode.SharpConvex;
+            if (_sharpConvexContainer != null)
+                _sharpConvexContainer.style.display = isSharp ? DisplayStyle.Flex : DisplayStyle.None;
+            if (_smoothSurfacesCard != null)
+                _smoothSurfacesCard.style.display = isSharp ? DisplayStyle.None : DisplayStyle.Flex;
+
+            if (_hardEdgesCardTitle != null)
+            {
+                _hardEdgesCardTitle.text = isSharp
+                    ? Tr("シャープ凸エッジ / 狭ベベル検出", "SHARP CONVEX / NARROW BEVEL")
+                    : Tr("ハードエッジ (エッジ検出)", "HARD EDGES (Edge Detection)");
+            }
+            if (_edgeWidthField != null)
+            {
+                _edgeWidthField.label = isSharp
+                    ? Tr("マスク幅 (m)", "Mask Width (m)")
+                    : Tr("エッジ幅 (m)", "Edge Width (m)");
+            }
         }
 
         private void BindSettingsEvents()
@@ -347,6 +385,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             {
                 Undo.RecordObject(this, "Change Mode");
                 _settings.Mode = (CurvatureBakeMode)evt.newValue;
+                UpdateModeVisibility();
             });
 
             _resolutionField?.RegisterValueChangedCallback(evt =>
@@ -391,6 +430,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             {
                 Undo.RecordObject(this, "Change Edge Strength");
                 _settings.EdgeStrength = Mathf.Max(evt.newValue, 0f);
+            });
+
+            _sharpMinAngleSlider?.RegisterValueChangedCallback(evt =>
+            {
+                Undo.RecordObject(this, "Change Sharp Min Angle");
+                _settings.SharpMinAngle = Mathf.Clamp(evt.newValue, 5f, 150f);
+            });
+
+            _maxBevelWidthField?.RegisterValueChangedCallback(evt =>
+            {
+                Undo.RecordObject(this, "Change Max Bevel Width");
+                _settings.MaxBevelWidth = Mathf.Clamp(evt.newValue, 0f, 0.05f);
             });
 
             _radiusField?.RegisterValueChangedCallback(evt =>
@@ -470,9 +521,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (_qualityField != null) _qualityField.label = Tr("品質", "Quality");
             if (_supersampleToggle != null) _supersampleToggle.label = Tr("スーパーサンプリング 2x", "Supersample 2x");
 
-            if (_hardEdgesCardTitle != null) _hardEdgesCardTitle.text = Tr("ハードエッジ (エッジ検出)", "HARD EDGES (Edge Detection)");
-            if (_edgeWidthField != null) _edgeWidthField.label = Tr("エッジ幅 (m)", "Edge Width (m)");
             if (_edgeStrengthSlider != null) _edgeStrengthSlider.label = Tr("エッジ強度", "Edge Strength");
+            if (_sharpMinAngleSlider != null) _sharpMinAngleSlider.label = Tr("最小角角度 (°)", "Min Corner Angle (°)");
+            if (_maxBevelWidthField != null) _maxBevelWidthField.label = Tr("最大ベベル幅 (m)", "Max Bevel Width (m)");
+            UpdateModeVisibility();
 
             if (_smoothSurfacesCardTitle != null) _smoothSurfacesCardTitle.text = Tr("曲面設定 (曲面検出)", "SMOOTH SURFACES (Curvature)");
             if (_radiusField != null) _radiusField.label = Tr("曲面計測半径 (m)", "Radius (m)");
@@ -520,11 +572,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             {
                 Name = Tr("Bake Mode (ベイクモード)", "Bake Mode"),
                 Description = Tr(
-                    "出力する曲率テクスチャの種類を指定します。\n・Default: 符号付き曲率 (平坦=0.5、凸=白、凹=黒)\n・Convex: 凸部のみ抽出 (エッジの摩耗・ハイライト用)\n・Concave: 凹部のみ抽出 (溝の汚れ・影マスク用)",
-                    "Selects what the baked curvature texture represents:\n• Default: Signed curvature (0.5 = flat, brighter = convex, darker = concave)\n• Convex: White on convex edges (edge wear / scratch mask)\n• Concave: White in creases (dirt / grime mask)"),
+                    "出力する曲率テクスチャの種類を指定します。\n・Default: 符号付き曲率 (平坦=0.5、凸=白、凹=黒)\n・Convex: 凸部のみ抽出 (エッジの摩耗・ハイライト用)\n・Concave: 凹部のみ抽出 (溝の汚れ・影マスク用)\n・SharpConvex: 凸ハードエッジと狭いベベルの急な角のみをワールド空間幅で抽出 (緩やかな曲面は除外)",
+                    "Selects what the baked curvature texture represents:\n• Default: Signed curvature (0.5 = flat, brighter = convex, darker = concave)\n• Convex: White on convex edges & smooth convex surfaces (wear mask)\n• Concave: White in creases (dirt / grime mask)\n• SharpConvex: White only on convex hard edges and sharp corners with narrow bevels (ignores smooth curves)"),
                 IncreaseImpact = Tr(
-                    "【切替効果】用途に応じた白黒マスク（凸/凹）または全曲率マップを切り替えます。",
-                    "[Mode change] Selects full signed curvature map or wear/dirt masks."),
+                    "【切替効果】用途に応じた白黒マスク（凸/凹/シャープ凸角のみ）または全曲率マップを切り替えます。",
+                    "[Mode change] Selects full signed curvature map, wear/dirt masks, or sharp convex edge mask."),
                 DecreaseImpact = ""
             });
 
@@ -608,6 +660,34 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 DecreaseImpact = Tr(
                     "【値を減らす (▼)】ハードエッジの影響が弱まり、0.0にするとハードエッジ検出を無効化できます。",
                     "[Decrease ▼] Reduces hard edge intensity; setting to 0 disables hard edge detection.")
+            });
+
+            AttachExplanation(_sharpMinAngleSlider, new PropertyExplanation
+            {
+                Name = Tr("Min Corner Angle [°] (最小角角度)", "Min Corner Angle (°)"),
+                Description = Tr(
+                    "SharpConvex モードでマスク対象にする凸角の最小合計角度（度）です。この角度を超える急な凸角・狭ベベルだけを抽出します。",
+                    "Minimum total convex bending angle (degrees) included in SharpConvex mode. Only corners sharper than this threshold are masked."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】より鋭い角（直角や鋭角など）だけを厳選し、緩やかな角や低ポリ曲面の折れを除外します。",
+                    "[Increase ▲] Restricts the mask to sharper corners (e.g. 60°–90°+) and excludes gentle bends."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】やや緩やかな凸角もマスクに含めるようになります。",
+                    "[Decrease ▼] Includes shallower convex corners in the mask.")
+            });
+
+            AttachExplanation(_maxBevelWidthField, new PropertyExplanation
+            {
+                Name = Tr("Max Bevel Width [m] (最大ベベル幅)", "Max Bevel Width (m)"),
+                Description = Tr(
+                    "SharpConvex モードで「急な角」として認識するベベルの最大幅（メートル単位）です。例: 0.004 = 4mm 以下の狭いベベルを検出し、大きな曲面や広い丸角は除外します。",
+                    "Maximum world-space bevel width (meters) recognized as a sharp corner in SharpConvex mode. E.g. 0.004 (4 mm) detects narrow chamfers/bevels while ignoring broad curves."),
+                IncreaseImpact = Tr(
+                    "【値を増やす (▲)】より幅の広いベベルや丸角もマスク対象に含まれます（大きくしすぎると細い円柱等も拾います）。",
+                    "[Increase ▲] Captures wider bevels and fillets (too large may include thin curved cylinders)."),
+                DecreaseImpact = Tr(
+                    "【値を減らす (▼)】極細ベベルとハードエッジのみに絞ります。0 にすると単一エッジの急な角（ハード/シャープエッジ）のみを検出します。",
+                    "[Decrease ▼] Narrows detection to tight bevels and hard edges; 0 detects single-edge sharp creases only.")
             });
 
             AttachExplanation(_radiusField, new PropertyExplanation
