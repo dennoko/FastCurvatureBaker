@@ -25,6 +25,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         Convex = 1,
         /// <summary>Concave emphasis: white in concave creases, black elsewhere (dirt / grime mask).</summary>
         Concave = 2,
+        /// <summary>
+        /// Sharp convex edge mask: white only on convex hard edges and sharp corners with narrow bevels,
+        /// black on smooth curved surfaces and concave creases.
+        /// </summary>
+        SharpConvex = 3,
     }
 
     public enum BakeQuality
@@ -69,6 +74,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         [Tooltip("Intensity of hard edges. A 90-degree edge reaches full intensity at 1.")]
         public float EdgeStrength = 1f;
 
+        [Tooltip("SharpConvex mode: minimum convex corner angle (degrees) to include in the mask.")]
+        public float SharpMinAngle = 45f;
+
+        [Tooltip("SharpConvex mode: maximum world-space bevel width (meters) treated as a sharp corner. 0 detects single-edge sharp creases only.")]
+        public float MaxBevelWidth = 0.004f;
+
         [Tooltip("Output intensity. A sphere whose radius equals Radius reaches full intensity at 1.")]
         public float Strength = 1f;
 
@@ -105,10 +116,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             Strength = Mathf.Max(Strength, 0f);
             EdgeWidth = Mathf.Max(EdgeWidth, 1e-5f);
             EdgeStrength = Mathf.Max(EdgeStrength, 0f);
+            SharpMinAngle = Mathf.Clamp(SharpMinAngle, 5f, 150f);
+            MaxBevelWidth = Mathf.Clamp(MaxBevelWidth, 0f, 0.05f);
             NormalRejection = Mathf.Clamp(NormalRejection, -1f, MaxNormalRejection);
             BlurPasses = Mathf.Clamp(BlurPasses, 0, 16);
             DilationPixels = Mathf.Clamp(DilationPixels, 0, 64);
         }
+
+        /// <summary>Whether the smooth-surface integral term is active for the current mode and strength.</summary>
+        public bool UsesSmoothTerm => Mode != CurvatureBakeMode.SharpConvex && Strength > 0f;
 
         /// <summary>Supersampling factor actually used for the current resolution.</summary>
         public int SupersampleFactor =>
@@ -131,7 +147,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// <summary>Background value written outside UV islands.</summary>
         public float BackgroundValue => Mode == CurvatureBakeMode.Default ? 0.5f : 0f;
 
-        /// <summary>File name suffix, so the three modes can be baked side by side.</summary>
+        /// <summary>File name suffix, so every mode can be baked side by side.</summary>
         public string FileSuffix
         {
             get
@@ -140,6 +156,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 {
                     case CurvatureBakeMode.Convex: return "_Convex";
                     case CurvatureBakeMode.Concave: return "_Concave";
+                    case CurvatureBakeMode.SharpConvex: return "_SharpConvex";
                     default: return "_Curvature";
                 }
             }
@@ -153,9 +170,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             switch (Mode)
             {
-                case CurvatureBakeMode.Convex: return Mathf.Clamp01(curvature);
-                case CurvatureBakeMode.Concave: return Mathf.Clamp01(-curvature);
-                default: return Mathf.Clamp01(0.5f + 0.5f * curvature);
+                case CurvatureBakeMode.Convex:
+                case CurvatureBakeMode.SharpConvex:
+                    return Mathf.Clamp01(curvature);
+                case CurvatureBakeMode.Concave:
+                    return Mathf.Clamp01(-curvature);
+                default:
+                    return Mathf.Clamp01(0.5f + 0.5f * curvature);
             }
         }
 

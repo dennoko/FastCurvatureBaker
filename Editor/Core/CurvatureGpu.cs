@@ -28,7 +28,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private readonly int _kEvaluate;
         private readonly int _kDownsample;
         private readonly int _kBlur;
-        private readonly int _kDilate;
+        private readonly int _kJfaInit;
+        private readonly int _kJfaStep;
+        private readonly int _kJfaApply;
 
         // Per-mesh resources
         private ComputeBuffer _positions;
@@ -38,11 +40,12 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         private ComputeBuffer _patches;
         private ComputeBuffer _patchComponents;
         private ComputeBuffer _samples;
-        private ComputeBuffer _buckets;
+        private ComputeBuffer _sampleCells;
         private ComputeBuffer _edges;
-        private ComputeBuffer _edgeBuckets;
+        private ComputeBuffer _edgeCells;
         private SpatialHashGrid<SurfaceSample> _grid;
         private SpatialHashGrid<EdgeSegment> _edgeGrid;
+        private float _edgeMaxReach;
 
         public CurvatureGpu(ComputeShader shader)
         {
@@ -55,34 +58,44 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _kEvaluate = FindKernel("EvaluateCurvature");
             _kDownsample = FindKernel("Downsample");
             _kBlur = FindKernel("Blur");
-            _kDilate = FindKernel("Dilate");
+            _kJfaInit = FindKernel("JfaInit");
+            _kJfaStep = FindKernel("JfaStep");
+            _kJfaApply = FindKernel("JfaApply");
         }
 
-        /// <param name="edgeGrid">Hard-edge segments, or null when the mesh has none.</param>
-        public void LoadMesh(SurfaceMesh mesh, SpatialHashGrid<SurfaceSample> grid, SpatialHashGrid<EdgeSegment> edgeGrid)
+        /// <param name="edgeGrid">Hard/sharp edge segments, or null when the mesh has none.</param>
+        /// <param name="edgeMaxReach">Maximum distance from a point to an edge segment midpoint within EdgeWidth.</param>
+        public void LoadMesh(
+            SurfaceMesh mesh,
+            SpatialHashGrid<SurfaceSample> grid,
+            SpatialHashGrid<EdgeSegment> edgeGrid,
+            float edgeMaxReach)
         {
             ReleaseMesh();
             _grid = grid;
             _edgeGrid = edgeGrid;
+            _edgeMaxReach = edgeMaxReach;
+
             _positions = CreateBuffer(mesh.Positions, 12);
             _normals = CreateBuffer(mesh.Normals, 12);
             _uvs = mesh.UVs;
             _uvsBuffer = CreateBuffer(mesh.UVs, 8);
             _patches = CreateBuffer(mesh.PatchIds, 4);
             _patchComponents = CreateBuffer(mesh.PatchComponents, 4);
-            // Placeholder when the smooth term is off (Strength 0): buffers cannot be empty.
+
+            // Placeholder when the smooth term is off: buffers cannot be empty.
             _samples = grid.SortedItems.Length > 0
                 ? CreateBuffer(grid.SortedItems, SurfaceSample.Stride)
                 : new ComputeBuffer(1, SurfaceSample.Stride);
-            _buckets = CreatePairBuffer(grid.Buckets);
+            _sampleCells = CreateBuffer(grid.CellTable, CellEntry.Stride);
 
             // The kernel always references the edge buffers; bind placeholders when there are no edges.
-            _edges = edgeGrid != null
+            _edges = edgeGrid != null && edgeGrid.SortedItems.Length > 0
                 ? CreateBuffer(edgeGrid.SortedItems, EdgeSegment.Stride)
                 : new ComputeBuffer(1, EdgeSegment.Stride);
-            _edgeBuckets = edgeGrid != null
-                ? CreatePairBuffer(edgeGrid.Buckets)
-                : new ComputeBuffer(1, 8);
+            _edgeCells = edgeGrid != null && edgeGrid.CellTable.Length > 0
+                ? CreateBuffer(edgeGrid.CellTable, CellEntry.Stride)
+                : CreateBuffer(new CellEntry[1], CellEntry.Stride);
         }
 
         /// <summary>
@@ -91,6 +104,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// </summary>
         public async Task<Vector2[]> BakeSubMeshAsync(
             int[] triangles,
+            float[] bevelCore,
             CurvatureBakeSettings settings,
             Action<float, string> progress,
             CancellationToken token)
@@ -102,18 +116,31 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             int res = outputRes * settings.SupersampleFactor;
             int texels = res * res;
 
-            ComputeBuffer triangleBuffer = null, islandBuffer = null, tileBuffer = null;
+            ComputeBuffer triangleBuffer = null, islandBuffer = null, bevelCoreBuffer = null, tileBuffer = null;
             ComputeBuffer gOwner = null, gPosition = null, gNormal = null;
             ComputeBuffer result = null, pingA = null, pingB = null;
+            ComputeBuffer jfaA = null, jfaB = null;
             try
             {
-                progress(0f, "Rasterizing UV");
-                uint[] tiles = UvLayout.BuildRasterTiles(triangles, _uvs, res, out int tileSize);
+                progress(0f, "Preparing UV layout");
+                Vector2[] uvs = _uvs;
+                (uint[] tiles, int tileSize, uint[] islands) = await Task.Run(() =>
+                {
+                    uint[] t = UvLayout.BuildRasterTiles(triangles, uvs, res, out int ts, token);
+                    uint[] isl = UvLayout.LabelIslands(triangles, uvs, token);
+                    return (t, ts, isl);
+                }, token);
                 int tileCount = tiles.Length / 2;
                 token.ThrowIfCancellationRequested();
 
+                progress(0.01f, "Rasterizing UV");
                 triangleBuffer = CreateBuffer(triangles, 4);
-                islandBuffer = CreateBuffer(UvLayout.LabelIslands(triangles, _uvs), 4);
+                islandBuffer = CreateBuffer(islands, 4);
+                bool useBevelCore = bevelCore != null && bevelCore.Length > 0;
+                bevelCoreBuffer = useBevelCore
+                    ? CreateBuffer(bevelCore, 4)
+                    : CreateBuffer(new float[1], 4);
+
                 gOwner = new ComputeBuffer(texels, 4);
                 gPosition = new ComputeBuffer(texels, 16);
                 gNormal = new ComputeBuffer(texels, 4); // also the conservative passes' distance scratch (_GDist)
@@ -142,7 +169,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                         _shader.SetBuffer(kernel, "_GDist", gNormal);
                         int pass = i;
                         await DispatchAdaptiveAsync(kernel, tileCount, gOwner, 4,
-                            p => progress(0.05f * (pass + p) / passes.Length, "Rasterizing UV"), token);
+                            p => progress(0.01f + 0.04f * (pass + p) / passes.Length, "Rasterizing UV"), token);
                     }
                     tileBuffer.Release(); tileBuffer = null;
                 }
@@ -161,33 +188,44 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 token.ThrowIfCancellationRequested();
 
                 // ---- Curvature ----
+                float sampleNorm = settings.Radius / _grid.CellSize + 1e-3f;
                 _shader.SetVector("_GridOrigin", _grid.Origin);
                 _shader.SetFloat("_InvCellSize", 1f / _grid.CellSize);
                 _shader.SetInt("_HashMask", (int)_grid.HashMask);
+                _shader.SetFloat("_SampleSearchNorm", sampleNorm * sampleNorm);
                 _shader.SetFloat("_Radius", settings.Radius);
-                _shader.SetFloat("_Strength", settings.Strength);
+                _shader.SetFloat("_Strength", settings.UsesSmoothTerm ? settings.Strength : 0f);
                 _shader.SetFloat("_NormalRejection", settings.NormalRejection);
                 _shader.SetInt("_SameComponentOnly", settings.SameComponentOnly ? 1 : 0);
 
-                _shader.SetInt("_EdgeCount", _edgeGrid != null ? _edgeGrid.SortedItems.Length : 0);
-                if (_edgeGrid != null)
+                int edgeCount = _edgeGrid != null ? _edgeGrid.SortedItems.Length : 0;
+                _shader.SetInt("_EdgeCount", edgeCount);
+                if (edgeCount > 0)
                 {
+                    float edgeNorm = _edgeMaxReach / _edgeGrid.CellSize + 1e-3f;
                     _shader.SetVector("_EdgeGridOrigin", _edgeGrid.Origin);
                     _shader.SetFloat("_EdgeInvCellSize", 1f / _edgeGrid.CellSize);
                     _shader.SetInt("_EdgeHashMask", (int)_edgeGrid.HashMask);
+                    _shader.SetFloat("_EdgeSearchNorm", edgeNorm * edgeNorm);
+                }
+                else
+                {
+                    _shader.SetFloat("_EdgeSearchNorm", 0f);
                 }
                 _shader.SetFloat("_EdgeWidth", settings.EdgeWidth);
                 _shader.SetFloat("_EdgeStrength", settings.EdgeStrength);
+                _shader.SetInt("_UseBevelCore", useBevelCore ? 1 : 0);
 
                 _shader.SetBuffer(_kEvaluate, "_GPosition", gPosition);
                 _shader.SetBuffer(_kEvaluate, "_GNormal", gNormal);
                 _shader.SetBuffer(_kEvaluate, "_GOwner", gOwner);
                 _shader.SetBuffer(_kEvaluate, "_TriangleIslands", islandBuffer);
+                _shader.SetBuffer(_kEvaluate, "_TriangleBevelCore", bevelCoreBuffer);
                 _shader.SetBuffer(_kEvaluate, "_PatchComponents", _patchComponents);
                 _shader.SetBuffer(_kEvaluate, "_Samples", _samples);
-                _shader.SetBuffer(_kEvaluate, "_Buckets", _buckets);
+                _shader.SetBuffer(_kEvaluate, "_SampleCells", _sampleCells);
                 _shader.SetBuffer(_kEvaluate, "_Edges", _edges);
-                _shader.SetBuffer(_kEvaluate, "_EdgeBuckets", _edgeBuckets);
+                _shader.SetBuffer(_kEvaluate, "_EdgeCells", _edgeCells);
                 _shader.SetBuffer(_kEvaluate, "_Result", result);
 
                 await DispatchAdaptiveAsync(_kEvaluate, texels, result, 8,
@@ -198,38 +236,82 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 gNormal.Release(); gNormal = null;
                 triangleBuffer.Release(); triangleBuffer = null;
                 islandBuffer.Release(); islandBuffer = null;
+                bevelCoreBuffer.Release(); bevelCoreBuffer = null;
 
                 // ---- Post-process ----
                 progress(0.92f, "Post-processing");
+                int outputTexels = outputRes * outputRes;
                 ComputeBuffer current = result;
                 ComputeBuffer spare;
                 if (res != outputRes)
                 {
-                    pingA = new ComputeBuffer(outputRes * outputRes, 8);
+                    pingA = new ComputeBuffer(outputTexels, 8);
                     _shader.SetInt("_SrcWidth", res);
                     _shader.SetInt("_DstWidth", outputRes);
                     _shader.SetBuffer(_kDownsample, "_Src", result);
                     _shader.SetBuffer(_kDownsample, "_Dst", pingA);
-                    Dispatch1D(_kDownsample, outputRes * outputRes);
+                    Dispatch1D(_kDownsample, outputTexels);
                     result.Release(); result = null;
                     current = pingA;
-                    pingB = new ComputeBuffer(outputRes * outputRes, 8);
+                    pingB = new ComputeBuffer(outputTexels, 8);
                     spare = pingB;
                 }
                 else
                 {
-                    pingA = new ComputeBuffer(texels, 8);
+                    pingA = new ComputeBuffer(outputTexels, 8);
                     spare = pingA;
                 }
 
                 _shader.SetInt("_SrcWidth", outputRes);
                 for (int i = 0; i < settings.BlurPasses; i++)
-                    PingPong(_kBlur, ref current, ref spare, outputRes);
-                for (int i = 0; i < settings.DilationPixels; i++)
-                    PingPong(_kDilate, ref current, ref spare, outputRes);
+                    PingPong(_kBlur, ref current, ref spare, outputTexels);
+
+                if (settings.DilationPixels > 0)
+                {
+                    jfaA = new ComputeBuffer(outputTexels, 4);
+                    jfaB = new ComputeBuffer(outputTexels, 4);
+
+                    _shader.SetBuffer(_kJfaInit, "_Src", current);
+                    _shader.SetBuffer(_kJfaInit, "_JfaDst", jfaA);
+                    Dispatch1D(_kJfaInit, outputTexels);
+
+                    ComputeBuffer jfaCur = jfaA;
+                    ComputeBuffer jfaSpare = jfaB;
+                    int maxStep = 1;
+                    while (maxStep * 2 <= settings.DilationPixels)
+                        maxStep *= 2;
+
+                    for (int step = maxStep; step >= 1; step >>= 1)
+                    {
+                        _shader.SetInt("_JfaStep", step);
+                        _shader.SetBuffer(_kJfaStep, "_JfaSrc", jfaCur);
+                        _shader.SetBuffer(_kJfaStep, "_JfaDst", jfaSpare);
+                        Dispatch1D(_kJfaStep, outputTexels);
+                        (jfaCur, jfaSpare) = (jfaSpare, jfaCur);
+                    }
+                    // JFA+1 refinement pass eliminates rare 1-px Voronoi corner discrepancies.
+                    if (settings.DilationPixels > 1)
+                    {
+                        _shader.SetInt("_JfaStep", 1);
+                        _shader.SetBuffer(_kJfaStep, "_JfaSrc", jfaCur);
+                        _shader.SetBuffer(_kJfaStep, "_JfaDst", jfaSpare);
+                        Dispatch1D(_kJfaStep, outputTexels);
+                        (jfaCur, jfaSpare) = (jfaSpare, jfaCur);
+                    }
+
+                    _shader.SetInt("_DilationDist2", settings.DilationPixels * settings.DilationPixels);
+                    _shader.SetBuffer(_kJfaApply, "_Src", current);
+                    _shader.SetBuffer(_kJfaApply, "_JfaSrc", jfaCur);
+                    _shader.SetBuffer(_kJfaApply, "_Dst", spare);
+                    Dispatch1D(_kJfaApply, outputTexels);
+                    (current, spare) = (spare, current);
+
+                    jfaA.Release(); jfaA = null;
+                    jfaB.Release(); jfaB = null;
+                }
 
                 progress(0.97f, "Reading back");
-                var data = new Vector2[outputRes * outputRes];
+                var data = new Vector2[outputTexels];
                 current.GetData(data);
                 return data;
             }
@@ -237,6 +319,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             {
                 triangleBuffer?.Release();
                 islandBuffer?.Release();
+                bevelCoreBuffer?.Release();
                 tileBuffer?.Release();
                 gOwner?.Release();
                 gPosition?.Release();
@@ -244,6 +327,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 result?.Release();
                 pingA?.Release();
                 pingB?.Release();
+                jfaA?.Release();
+                jfaB?.Release();
             }
         }
 
@@ -258,18 +343,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             _patches?.Release(); _patches = null;
             _patchComponents?.Release(); _patchComponents = null;
             _samples?.Release(); _samples = null;
-            _buckets?.Release(); _buckets = null;
+            _sampleCells?.Release(); _sampleCells = null;
             _edges?.Release(); _edges = null;
-            _edgeBuckets?.Release(); _edgeBuckets = null;
+            _edgeCells?.Release(); _edgeCells = null;
             _grid = null;
             _edgeGrid = null;
         }
 
-        private void PingPong(int kernel, ref ComputeBuffer current, ref ComputeBuffer spare, int width)
+        private void PingPong(int kernel, ref ComputeBuffer current, ref ComputeBuffer spare, int count)
         {
             _shader.SetBuffer(kernel, "_Src", current);
             _shader.SetBuffer(kernel, "_Dst", spare);
-            Dispatch1D(kernel, width * width);
+            Dispatch1D(kernel, count);
             (current, spare) = (spare, current);
         }
 
@@ -287,10 +372,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// <summary>
         /// Splits a heavy dispatch into chunks sized to take about <see cref="TargetDispatchMs"/> each,
         /// waiting for every chunk so no single GPU submission can trip the driver timeout (TDR).
-        /// Chunks grow at most 2x per step and never beyond <see cref="MaxChunk"/>, which bounds the
-        /// overshoot when the work per element suddenly rises (e.g. from empty UV space into a dense island).
+        /// Chunk sizes are rounded to multiples of <see cref="GroupSize"/> so 8x8 UV blocks stay aligned.
         /// </summary>
-        /// <param name="probe">Any buffer; one element is read back to wait for completion.</param>
         private async Task DispatchAdaptiveAsync(
             int kernel, int count, ComputeBuffer probe, int probeStride, Action<float> progress, CancellationToken token)
         {
@@ -311,7 +394,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
                 offset += n;
                 double scale = Math.Min(2.0, TargetDispatchMs / ms);
-                chunk = (int)Math.Max(1024, Math.Min(MaxChunk, n * scale));
+                int rawChunk = (int)Math.Max(1024, Math.Min(MaxChunk, n * scale));
+                chunk = (rawChunk + GroupSize - 1) & ~(GroupSize - 1);
 
                 if (yieldTimer.ElapsedMilliseconds >= YieldIntervalMs)
                 {
@@ -352,7 +436,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             return buffer;
         }
 
-        /// <summary>Uploads an interleaved uint array (e.g. (start, count) buckets) as one uint2 element per pair.</summary>
+        /// <summary>Uploads an interleaved uint array as one uint2 element per pair.</summary>
         private static ComputeBuffer CreatePairBuffer(uint[] pairs)
         {
             var buffer = new ComputeBuffer(pairs.Length / 2, 8);

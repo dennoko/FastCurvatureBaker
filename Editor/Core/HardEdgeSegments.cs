@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
@@ -22,7 +23,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
     }
 
     /// <summary>
-    /// Splits hard edges into short segments so they can be bucketed by midpoint in a
+    /// Splits hard/sharp edges into short segments so they can be bucketed by midpoint in a
     /// <see cref="SpatialHashGrid{T}"/> whose cells are about the size of the edge width.
     /// </summary>
     internal static class HardEdgeSegments
@@ -30,13 +31,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public const int MaxSegments = 1 << 20;
 
         /// <param name="width">Distance from the edge over which it is visible.</param>
+        /// <param name="maxReach">Maximum distance from a surface point to the midpoint of any segment within <paramref name="width"/>.</param>
         /// <param name="cellSize">Grid cell size that guarantees every segment within
         /// <paramref name="width"/> of a point lies in the point's 3x3x3 cell neighbourhood.</param>
-        public static EdgeSegment[] Build(List<HardEdge> edges, float width, out float cellSize)
+        public static EdgeSegment[] Build(
+            List<HardEdge> edges, float width, out float maxReach, out float cellSize,
+            CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
+
             float totalLength = 0f;
-            foreach (var edge in edges)
-                totalLength += Vector3.Distance(edge.A, edge.B);
+            for (int i = 0; i < edges.Count; i++)
+                totalLength += Vector3.Distance(edges[i].A, edges[i].B);
 
             // Segments no longer than the width, unless that would exceed the budget
             // (every edge takes at least one segment, so only the remainder is subdivided).
@@ -44,8 +50,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             float segmentLength = Mathf.Max(width, totalLength / budget);
 
             var segments = new List<EdgeSegment>(edges.Count);
-            foreach (var edge in edges)
+            for (int e = 0; e < edges.Count; e++)
             {
+                if ((e & 4095) == 0) token.ThrowIfCancellationRequested();
+                HardEdge edge = edges[e];
                 int pieces = Mathf.Max(1, Mathf.CeilToInt(Vector3.Distance(edge.A, edge.B) / segmentLength));
                 for (int i = 0; i < pieces; i++)
                 {
@@ -64,7 +72,8 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
             // A segment within `width` of p has its midpoint within width + segmentLength / 2.
             // 1% margin: CPU and GPU may floor a cell coordinate differently right on a boundary.
-            cellSize = (width + segmentLength * 0.5f) * 1.01f;
+            maxReach = width + segmentLength * 0.5f;
+            cellSize = maxReach * 1.01f;
             return segments.ToArray();
         }
     }

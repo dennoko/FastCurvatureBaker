@@ -1,9 +1,51 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
+    /// <summary>
+    /// Exact float equality comparer for <see cref="Vector3"/> that normalizes -0.0f to +0.0f
+    /// so vertices on symmetry planes (e.g. X = ±0.0f) hash to the same bucket and weld reliably.
+    /// </summary>
+    internal sealed class CanonicalVector3Comparer : IEqualityComparer<Vector3>
+    {
+        public static readonly CanonicalVector3Comparer Instance = new CanonicalVector3Comparer();
+
+        public bool Equals(Vector3 a, Vector3 b) => a.x == b.x && a.y == b.y && a.z == b.z;
+
+        public int GetHashCode(Vector3 v)
+        {
+            float x = v.x == 0f ? 0f : v.x;
+            float y = v.y == 0f ? 0f : v.y;
+            float z = v.z == 0f ? 0f : v.z;
+            unchecked
+            {
+                int h = x.GetHashCode();
+                h = (h * 397) ^ y.GetHashCode();
+                h = (h * 397) ^ z.GetHashCode();
+                return h;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Raw mesh data copied from Unity objects on the main thread so topology, welding and edge
+    /// extraction can run asynchronously on a worker thread.
+    /// </summary>
+    internal sealed class RawMeshData
+    {
+        public string Name;
+        public Vector3[] LocalPositions;
+        public Vector3[] LocalNormals;
+        public Vector3[] PosedPositions;
+        public Vector3[] PosedNormals;
+        public Vector2[] UVs;
+        public int[][] SubMeshTriangles;
+        public Matrix4x4 ToWorld;
+    }
+
     /// <summary>
     /// An edge where the shading normals are split (hard edge), in world space.
     /// </summary>
@@ -29,6 +71,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public Vector3[] Positions;     // world orientation and scale, relative to the renderer's pivot
         public Vector3[] Normals;       // world space, normalized
         public Vector2[] UVs;
+        public int[] PositionIds;       // welded local-position id per vertex (shared across UV seams & hard edges)
         public uint[] ComponentIds;     // connected-part id per vertex (welded by position: UV seams and hard edges joined)
         public int ComponentCount;
         public uint[] PatchIds;         // smooth-patch id per vertex (welded by position + normal: bounded by hard edges)
@@ -40,9 +83,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         public int VertexCount => Positions.Length;
 
         /// <summary>
-        /// Extracts the mesh of a MeshRenderer or SkinnedMeshRenderer in its current pose.
+        /// Copies all Unity-object data needed to build a <see cref="SurfaceMesh"/>.
+        /// Must be called on the Unity main thread.
         /// </summary>
-        public static SurfaceMesh FromRenderer(Renderer renderer, int uvChannel)
+        public static RawMeshData ExtractRaw(Renderer renderer, int uvChannel)
         {
             if (renderer == null)
                 throw new ArgumentNullException(nameof(renderer));
@@ -63,21 +107,46 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (uvList.Count != localPositions.Length)
                 throw new InvalidOperationException($"Mesh '{source.name}' has no UV{uvChannel}.");
 
-            var mesh = new SurfaceMesh
-            {
-                Name = renderer.name,
-                UVs = uvList.ToArray(),
-                SubMeshTriangles = new int[source.subMeshCount][],
-            };
+            var subMeshTriangles = new int[source.subMeshCount][];
             for (int sub = 0; sub < source.subMeshCount; sub++)
             {
                 if (source.GetTopology(sub) == MeshTopology.Triangles)
-                    mesh.SubMeshTriangles[sub] = source.GetTriangles(sub);
+                    subMeshTriangles[sub] = source.GetTriangles(sub);
             }
 
             ExtractPose(renderer, source, out Vector3[] posedPositions, out Vector3[] posedNormals, out Matrix4x4 toWorld);
 
+            return new RawMeshData
+            {
+                Name = renderer.name,
+                LocalPositions = localPositions,
+                LocalNormals = source.normals,
+                PosedPositions = posedPositions,
+                PosedNormals = posedNormals,
+                UVs = uvList.ToArray(),
+                SubMeshTriangles = subMeshTriangles,
+                ToWorld = toWorld,
+            };
+        }
+
+        /// <summary>
+        /// Transforms positions/normals and builds topology from <see cref="RawMeshData"/>.
+        /// Pure C# (safe to run on a background worker thread).
+        /// </summary>
+        public static SurfaceMesh BuildFromRaw(RawMeshData raw, bool extractHardEdges, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+
+            var mesh = new SurfaceMesh
+            {
+                Name = raw.Name,
+                UVs = raw.UVs,
+                SubMeshTriangles = raw.SubMeshTriangles,
+            };
+
+            Matrix4x4 toWorld = raw.ToWorld;
             var normalMatrix = toWorld.inverse.transpose;
+            Vector3[] posedPositions = raw.PosedPositions;
             mesh.Positions = new Vector3[posedPositions.Length];
             // Drop the translation before transforming: a large world offset would round the
             // positions to coarse floats that no later recentering could recover.
@@ -85,6 +154,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             for (int i = 0; i < posedPositions.Length; i++)
                 mesh.Positions[i] = toWorld.MultiplyPoint3x4(posedPositions[i]);
 
+            token.ThrowIfCancellationRequested();
+
+            Vector3[] posedNormals = raw.PosedNormals;
             if (posedNormals != null && posedNormals.Length == posedPositions.Length)
             {
                 mesh.Normals = new Vector3[posedNormals.Length];
@@ -96,9 +168,19 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 mesh.Normals = ComputeAreaWeightedNormals(mesh.Positions, mesh.SubMeshTriangles);
             }
 
-            ComputeTopology(localPositions, source.normals, mesh);
+            token.ThrowIfCancellationRequested();
+            ComputeTopology(raw.LocalPositions, raw.LocalNormals, mesh, extractHardEdges, token);
             mesh.Bounds = ComputeBounds(mesh.Positions);
             return mesh;
+        }
+
+        /// <summary>
+        /// Extracts the mesh of a MeshRenderer or SkinnedMeshRenderer in its current pose.
+        /// </summary>
+        public static SurfaceMesh FromRenderer(Renderer renderer, int uvChannel)
+        {
+            RawMeshData raw = ExtractRaw(renderer, uvChannel);
+            return BuildFromRaw(raw, extractHardEdges: true, CancellationToken.None);
         }
 
         public static Mesh GetSharedMesh(Renderer renderer)
@@ -161,13 +243,15 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// <item>Hard edges: manifold edges whose two faces do not share normals at an endpoint.</item>
         /// </list>
         /// </summary>
-        private static void ComputeTopology(Vector3[] localPositions, Vector3[] localNormals, SurfaceMesh mesh)
+        private static void ComputeTopology(
+            Vector3[] localPositions, Vector3[] localNormals, SurfaceMesh mesh,
+            bool extractHardEdges, CancellationToken token)
         {
             int vertexCount = localPositions.Length;
             bool hasNormals = localNormals != null && localNormals.Length == vertexCount;
 
-            // Weld by position, then split each position into clusters of matching normals.
-            var positionMap = new Dictionary<Vector3, int>(vertexCount);
+            // Weld by position (normalizing -0.0f to +0.0f), then split each position into clusters of matching normals.
+            var positionMap = new Dictionary<Vector3, int>(vertexCount, CanonicalVector3Comparer.Instance);
             var positionId = new int[vertexCount];
             var smoothId = new int[vertexCount];
             var clusterHead = new List<int>();    // per position: first smooth id at that position
@@ -201,6 +285,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 }
                 smoothId[i] = found;
             }
+            token.ThrowIfCancellationRequested();
 
             var componentParent = CreateSets(positionMap.Count);
             var patchParent = CreateSets(smoothRep.Count);
@@ -216,14 +301,18 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                     Union(patchParent, smoothId[a], smoothId[c]);
                 }
             }
+            token.ThrowIfCancellationRequested();
 
+            mesh.PositionIds = positionId;
             mesh.ComponentIds = LabelVertices(componentParent, positionId, out mesh.ComponentCount);
             mesh.PatchIds = LabelVertices(patchParent, smoothId, out int patchCount);
             mesh.PatchComponents = new uint[patchCount];
             for (int i = 0; i < vertexCount; i++)
                 mesh.PatchComponents[mesh.PatchIds[i]] = mesh.ComponentIds[i];
 
-            mesh.HardEdges = FindHardEdges(mesh, positionId, smoothId);
+            mesh.HardEdges = extractHardEdges
+                ? FindHardEdges(mesh, positionId, smoothId, token)
+                : new List<HardEdge>();
         }
 
         private struct EdgeSide
@@ -237,12 +326,14 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             public EdgeSide First, Second;
         }
 
-        private static List<HardEdge> FindHardEdges(SurfaceMesh mesh, int[] positionId, int[] smoothId)
+        private static List<HardEdge> FindHardEdges(
+            SurfaceMesh mesh, int[] positionId, int[] smoothId, CancellationToken token)
         {
             var edges = new Dictionary<long, EdgeRecord>();
             foreach (int[] tris in mesh.SubMeshTriangles)
             {
                 if (tris == null) continue;
+                token.ThrowIfCancellationRequested();
                 for (int t = 0; t + 2 < tris.Length; t += 3)
                 {
                     for (int e = 0; e < 3; e++)
@@ -266,6 +357,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 }
             }
 
+            token.ThrowIfCancellationRequested();
             var result = new List<HardEdge>();
             foreach (EdgeRecord record in edges.Values)
             {
@@ -404,6 +496,27 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         {
             float len = v.magnitude;
             return len > 1e-20f ? v / len : Vector3.up;
+        }
+
+        /// <summary>
+        /// 16+16-bit octahedral normal encoding. Matches <c>EncodeNormal</c> / <c>DecodeNormal</c> in FastCurvatureBake.compute.
+        /// </summary>
+        internal static uint EncodeNormalOct(Vector3 n)
+        {
+            float inv = 1f / Mathf.Max(Mathf.Abs(n.x) + Mathf.Abs(n.y) + Mathf.Abs(n.z), 1e-20f);
+            float nx = n.x * inv;
+            float ny = n.y * inv;
+            float nz = n.z * inv;
+            float ex = nx;
+            float ey = ny;
+            if (nz < 0f)
+            {
+                ex = (1f - Mathf.Abs(ny)) * (nx >= 0f ? 1f : -1f);
+                ey = (1f - Mathf.Abs(nx)) * (ny >= 0f ? 1f : -1f);
+            }
+            uint qx = (uint)Mathf.RoundToInt(Mathf.Clamp01(ex * 0.5f + 0.5f) * 65535f);
+            uint qy = (uint)Mathf.RoundToInt(Mathf.Clamp01(ey * 0.5f + 0.5f) * 65535f);
+            return qx | (qy << 16);
         }
     }
 }

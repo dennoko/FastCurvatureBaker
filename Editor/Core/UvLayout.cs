@@ -1,9 +1,31 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
+    /// <summary>
+    /// Exact float equality comparer for <see cref="Vector2"/> that normalizes -0.0f to +0.0f
+    /// so UV vertices on U=0 / V=0 weld consistently into the same island.
+    /// </summary>
+    internal sealed class CanonicalVector2Comparer : IEqualityComparer<Vector2>
+    {
+        public static readonly CanonicalVector2Comparer Instance = new CanonicalVector2Comparer();
+
+        public bool Equals(Vector2 a, Vector2 b) => a.x == b.x && a.y == b.y;
+
+        public int GetHashCode(Vector2 v)
+        {
+            float x = v.x == 0f ? 0f : v.x;
+            float y = v.y == 0f ? 0f : v.y;
+            unchecked
+            {
+                return (x.GetHashCode() * 397) ^ y.GetHashCode();
+            }
+        }
+    }
+
     /// <summary>
     /// UV-space preparation for the G-buffer rasterization.
     /// </summary>
@@ -23,8 +45,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// interleaved (triangle, tileX | tileY &lt;&lt; 16) pairs. One GPU thread handles one tile, so the
         /// work per thread is bounded by <paramref name="tileSize"/>² pixels regardless of triangle size.
         /// </summary>
-        public static uint[] BuildRasterTiles(int[] triangles, Vector2[] uvs, int resolution, out int tileSize)
+        public static uint[] BuildRasterTiles(
+            int[] triangles, Vector2[] uvs, int resolution, out int tileSize,
+            CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
             int triangleCount = triangles.Length / 3;
             tileSize = MinTileSize;
             while (tileSize < resolution && CountTiles(triangles, uvs, resolution, tileSize) > MaxTiles)
@@ -33,6 +58,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             var items = new List<uint>(triangleCount * 2);
             for (int t = 0; t < triangleCount; t++)
             {
+                if ((t & 4095) == 0) token.ThrowIfCancellationRequested();
                 if (!PixelFootprint(triangles, uvs, resolution, t, out Vector2 a, out Vector2 b, out Vector2 c,
                         out Vector2Int lo, out Vector2Int hi))
                     continue;
@@ -60,9 +86,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
         /// only for normals still connect) belong to the same island. Post-processing uses the ids to
         /// keep neighbouring islands from mixing when texels are averaged.
         /// </summary>
-        public static uint[] LabelIslands(int[] triangles, Vector2[] uvs)
+        public static uint[] LabelIslands(int[] triangles, Vector2[] uvs, CancellationToken token = default)
         {
-            var keyOf = new Dictionary<Vector2, int>();
+            token.ThrowIfCancellationRequested();
+            var keyOf = new Dictionary<Vector2, int>(uvs.Length, CanonicalVector2Comparer.Instance);
             var vertexKey = new int[uvs.Length];
             for (int v = 0; v < uvs.Length; v++)
             {
@@ -73,6 +100,7 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 }
                 vertexKey[v] = key;
             }
+            token.ThrowIfCancellationRequested();
 
             int[] parent = SurfaceMesh.CreateSets(keyOf.Count);
             for (int t = 0; t + 2 < triangles.Length; t += 3)

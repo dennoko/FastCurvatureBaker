@@ -1,19 +1,19 @@
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using UnityEngine;
 
 namespace DennokoWorks.Tool.FastCurvatureBaker
 {
-    /// <summary>GPU layout must match <c>SurfaceSample</c> in FastCurvatureBake.compute (32 bytes).</summary>
+    /// <summary>GPU layout must match <c>SurfaceSample</c> in FastCurvatureBake.compute (24 bytes).</summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct SurfaceSample
     {
         public Vector3 Position;
-        public Vector3 Normal;
+        public uint NormalOct; // 16+16-bit octahedral-encoded normal (SurfaceMesh.EncodeNormalOct)
         public uint Patch;     // smooth-patch id (see SurfaceMesh.PatchIds)
-        public float Weight; // represented surface area
+        public float Weight;   // represented surface area
 
-        public const int Stride = 32;
+        public const int Stride = 24;
     }
 
     /// <summary>
@@ -29,25 +29,43 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
         /// <param name="spacing">Target distance between neighbouring samples. May be enlarged to respect <see cref="MaxSamples"/>.</param>
         /// <param name="faceNormals">Give samples the triangle's geometric normal instead of the interpolated shading normal.</param>
-        public static SurfaceSample[] Generate(SurfaceMesh mesh, ref float spacing, bool faceNormals)
+        public static SurfaceSample[] Generate(
+            SurfaceMesh mesh, ref float spacing, bool faceNormals,
+            CancellationToken token = default)
         {
+            token.ThrowIfCancellationRequested();
+
+            int triangleCount = 0;
+            foreach (int[] tris in mesh.SubMeshTriangles)
+            {
+                if (tris != null)
+                    triangleCount += tris.Length / 3;
+            }
+
             // Measured once, reused by every budget attempt and the placement pass (same iteration order).
-            var areas = new List<float>();
-            var longestEdges = new List<float>();
+            var areas = new float[triangleCount];
+            var longestEdges = new float[triangleCount];
+            int triIdx = 0;
+            Vector3[] positions = mesh.Positions;
             foreach (int[] tris in mesh.SubMeshTriangles)
             {
                 if (tris == null) continue;
-                for (int t = 0; t + 2 < tris.Length; t += 3)
+                token.ThrowIfCancellationRequested();
+                for (int t = 0; t + 2 < tris.Length; t += 3, triIdx++)
                 {
                     int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    areas.Add(mesh.TriangleArea(i0, i1, i2));
-                    longestEdges.Add(Mathf.Sqrt(Mathf.Max(
-                        (mesh.Positions[i1] - mesh.Positions[i0]).sqrMagnitude,
-                        Mathf.Max((mesh.Positions[i2] - mesh.Positions[i1]).sqrMagnitude,
-                                  (mesh.Positions[i0] - mesh.Positions[i2]).sqrMagnitude))));
+                    Vector3 p0 = positions[i0];
+                    Vector3 p1 = positions[i1];
+                    Vector3 p2 = positions[i2];
+                    Vector3 e01 = p1 - p0;
+                    Vector3 e12 = p2 - p1;
+                    Vector3 e20 = p0 - p2;
+                    areas[triIdx] = 0.5f * Vector3.Cross(e01, p2 - p0).magnitude;
+                    longestEdges[triIdx] = Mathf.Sqrt(Mathf.Max(
+                        e01.sqrMagnitude,
+                        Mathf.Max(e12.sqrMagnitude, e20.sqrMagnitude)));
                 }
             }
-            int triangleCount = areas.Count;
 
             // Every triangle keeps at least one sample, so with more triangles than MaxSamples
             // the budget is the triangle count and the sample count exceeds MaxSamples.
@@ -64,8 +82,11 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 spacing = float.MaxValue;
                 count = triangleCount;
             }
+            token.ThrowIfCancellationRequested();
 
             var samples = new SurfaceSample[count];
+            Vector3[] normals = mesh.Normals;
+            uint[] patches = mesh.PatchIds;
             int written = 0;
             int triangle = 0;
             foreach (int[] tris in mesh.SubMeshTriangles)
@@ -73,12 +94,16 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 if (tris == null) continue;
                 for (int t = 0; t + 2 < tris.Length; t += 3, triangle++)
                 {
+                    if ((triangle & 4095) == 0) token.ThrowIfCancellationRequested();
+
                     int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
                     float area = areas[triangle];
                     int k = SamplesForTriangle(area, longestEdges[triangle], spacing);
                     float weight = area / k;
-                    uint patch = mesh.PatchIds[i0];
-                    Vector3 faceNormal = faceNormals ? mesh.FaceNormal(i0, i1, i2) : Vector3.zero;
+                    uint patch = patches[i0];
+                    uint faceNormalOct = faceNormals ? SurfaceMesh.EncodeNormalOct(mesh.FaceNormal(i0, i1, i2)) : 0u;
+                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
+                    Vector3 n0 = normals[i0], n1 = normals[i1], n2 = normals[i2];
 
                     // Per-triangle offset decorrelates the sequence between neighbouring triangles.
                     uint h = Hash((uint)written);
@@ -106,10 +131,10 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
 
                         samples[written++] = new SurfaceSample
                         {
-                            Position = w0 * mesh.Positions[i0] + u * mesh.Positions[i1] + v * mesh.Positions[i2],
-                            Normal = faceNormals
-                                ? faceNormal
-                                : SurfaceMesh.SafeNormalize(w0 * mesh.Normals[i0] + u * mesh.Normals[i1] + v * mesh.Normals[i2]),
+                            Position = w0 * p0 + u * p1 + v * p2,
+                            NormalOct = faceNormals
+                                ? faceNormalOct
+                                : SurfaceMesh.EncodeNormalOct(SurfaceMesh.SafeNormalize(w0 * n0 + u * n1 + v * n2)),
                             Patch = patch,
                             Weight = weight,
                         };
@@ -117,16 +142,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 }
             }
 
-            if (spacing == float.MaxValue)
-                Debug.LogWarning($"[FastCurvatureBaker] '{mesh.Name}': too many triangles for the sample budget; quality is reduced.");
-
             return samples;
         }
 
-        private static long CountSamples(List<float> areas, List<float> longestEdges, float spacing)
+        private static long CountSamples(float[] areas, float[] longestEdges, float spacing)
         {
             long count = 0;
-            for (int i = 0; i < areas.Count; i++)
+            for (int i = 0; i < areas.Length; i++)
                 count += SamplesForTriangle(areas[i], longestEdges[i], spacing);
             return count;
         }

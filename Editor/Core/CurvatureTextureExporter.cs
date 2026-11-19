@@ -66,8 +66,13 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 Object.DestroyImmediate(texture);
             }
 
-            AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
-            if (AssetImporter.GetAtPath(assetPath) is TextureImporter importer)
+            var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+            if (importer == null)
+            {
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
+                importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+            }
+            if (importer != null)
             {
                 importer.sRGBTexture = false;
                 importer.textureCompression = TextureImporterCompression.Uncompressed;

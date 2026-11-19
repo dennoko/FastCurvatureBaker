@@ -146,11 +146,17 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             Action<float, string> progress,
             CancellationToken token)
         {
-            progress(0f, "Preparing mesh");
+            progress(0f, "Extracting mesh");
             await Task.Yield();
             token.ThrowIfCancellationRequested();
 
-            SurfaceMesh mesh = SurfaceMesh.FromRenderer(renderer, settings.UVChannel);
+            // Unity API reads must run on the main thread; all subsequent CPU geometry work runs on a worker thread.
+            RawMeshData raw = SurfaceMesh.ExtractRaw(renderer, settings.UVChannel);
+            bool isSharpConvex = settings.Mode == CurvatureBakeMode.SharpConvex;
+
+            progress(PrepareShare * 0.25f, "Building topology");
+            SurfaceMesh mesh = await Task.Run(
+                () => SurfaceMesh.BuildFromRaw(raw, extractHardEdges: !isSharpConvex, token), token);
 
             var subMeshes = new List<int>();
             for (int sub = 0; sub < mesh.SubMeshTriangles.Length; sub++)
@@ -162,42 +168,72 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
             if (subMeshes.Count == 0)
                 throw new InvalidOperationException("The mesh has no triangle sub-meshes.");
 
-            progress(PrepareShare * 0.5f, "Sampling surface");
-            await Task.Yield();
+            progress(PrepareShare * 0.5f, isSharpConvex ? "Detecting sharp convex edges" : "Sampling surface");
+
+            float requestedSpacing = settings.Radius / settings.SamplesPerRadius;
+            float actualSpacing = requestedSpacing;
+            SurfaceSample[] samples = Array.Empty<SurfaceSample>();
+            SpatialHashGrid<SurfaceSample> grid = null;
+            SpatialHashGrid<EdgeSegment> edgeGrid = null;
+            float edgeMaxReach = 0f;
+            float[][] subMeshBevelCore = null;
+            int detectedEdgeCount = 0;
+
+            await Task.Run(() =>
+            {
+                if (settings.UsesSmoothTerm)
+                {
+                    float spacing = requestedSpacing;
+                    samples = SurfaceSampler.Generate(mesh, ref spacing, settings.Source == CurvatureSource.Geometry, token);
+                    actualSpacing = spacing;
+                }
+
+                grid = SpatialHashGridBuilders.BuildSamples(samples, mesh.Bounds, settings.Radius * 1.01f, token);
+
+                if (settings.EdgeStrength > 0f)
+                {
+                    List<HardEdge> edges;
+                    if (isSharpConvex)
+                    {
+                        SharpConvexResult sharp = SharpConvexDetector.Detect(
+                            mesh, settings.SharpMinAngle, settings.MaxBevelWidth, token);
+                        edges = sharp.Edges;
+                        subMeshBevelCore = sharp.SubMeshBevelCore;
+                    }
+                    else
+                    {
+                        edges = mesh.HardEdges;
+                    }
+
+                    detectedEdgeCount = edges.Count;
+                    if (edges.Count > 0)
+                    {
+                        EdgeSegment[] segments = HardEdgeSegments.Build(
+                            edges, settings.EdgeWidth, out edgeMaxReach, out float edgeCell, token);
+                        edgeGrid = SpatialHashGridBuilders.BuildEdges(segments, mesh.Bounds, edgeCell, token);
+                    }
+                }
+            }, token);
+
             token.ThrowIfCancellationRequested();
 
-            // The smooth term is skipped entirely (no samples) when its strength is zero.
-            SurfaceSample[] samples = Array.Empty<SurfaceSample>();
-            if (settings.Strength > 0f)
+            if (settings.UsesSmoothTerm)
             {
-                float requestedSpacing = settings.Radius / settings.SamplesPerRadius;
-                float spacing = requestedSpacing;
-                samples = SurfaceSampler.Generate(mesh, ref spacing, settings.Source == CurvatureSource.Geometry);
-                if (spacing > requestedSpacing * 1.001f)
+                if (actualSpacing == float.MaxValue)
+                {
+                    Debug.LogWarning($"{LogPrefix} '{renderer.name}': too many triangles for the sample budget; quality is reduced.");
+                }
+                else if (actualSpacing > requestedSpacing * 1.001f)
                 {
                     Debug.LogWarning($"{LogPrefix} '{renderer.name}': sample budget reached, spacing widened " +
-                                     $"from {requestedSpacing:G3} to {spacing:G3}. Increase Radius or lower Quality for cleaner results.");
+                                     $"from {requestedSpacing:G3} to {actualSpacing:G3}. Increase Radius or lower Quality for cleaner results.");
                 }
             }
 
-            progress(PrepareShare * 0.8f, "Building search grids");
-            await Task.Yield();
-            token.ThrowIfCancellationRequested();
-
-            // 1% margin: CPU and GPU may floor a cell coordinate differently right on a boundary.
-            var grid = SpatialHashGrid<SurfaceSample>.Build(
-                samples, s => s.Position, mesh.Bounds, settings.Radius * 1.01f);
-
-            SpatialHashGrid<EdgeSegment> edgeGrid = null;
-            if (mesh.HardEdges.Count > 0 && settings.EdgeStrength > 0f)
-            {
-                EdgeSegment[] segments = HardEdgeSegments.Build(mesh.HardEdges, settings.EdgeWidth, out float edgeCell);
-                edgeGrid = SpatialHashGrid<EdgeSegment>.Build(segments, e => e.Midpoint, mesh.Bounds, edgeCell);
-            }
-            token.ThrowIfCancellationRequested();
-            Debug.Log($"{LogPrefix} '{renderer.name}': {samples.Length} samples, {mesh.HardEdges.Count} hard edges, " +
+            Debug.Log($"{LogPrefix} '{renderer.name}': {samples.Length} samples, " +
+                      $"{detectedEdgeCount} {(isSharpConvex ? "sharp convex" : "hard")} edges, " +
                       $"{mesh.ComponentCount} parts.");
-            gpu.LoadMesh(mesh, grid, edgeGrid);
+            gpu.LoadMesh(mesh, grid, edgeGrid, edgeMaxReach);
 
             Material[] materials = renderer.sharedMaterials;
             for (int i = 0; i < subMeshes.Count; i++)
@@ -210,8 +246,9 @@ namespace DennokoWorks.Tool.FastCurvatureBaker
                 float subStart = PrepareShare + (1f - PrepareShare) * i / subMeshes.Count;
                 float subSpan = (1f - PrepareShare) / subMeshes.Count;
 
+                float[] bevelCore = subMeshBevelCore != null ? subMeshBevelCore[sub] : null;
                 Vector2[] data = await gpu.BakeSubMeshAsync(
-                    mesh.SubMeshTriangles[sub], settings,
+                    mesh.SubMeshTriangles[sub], bevelCore, settings,
                     (p, message) => progress(subStart + subSpan * p, label + message),
                     token);
 

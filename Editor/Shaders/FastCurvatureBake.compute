@@ -6,7 +6,9 @@
 #pragma kernel EvaluateCurvature
 #pragma kernel Downsample
 #pragma kernel Blur
-#pragma kernel Dilate
+#pragma kernel JfaInit
+#pragma kernel JfaStep
+#pragma kernel JfaApply
 
 // All 2D images are StructuredBuffers indexed as y * width + x.
 // Texel (x, y) covers UV ((x + 0.5) / width, (y + 0.5) / width); y = 0 is v = 0.
@@ -38,20 +40,31 @@ RWStructuredBuffer<float4> _GPosition;
 RWStructuredBuffer<uint>   _GNormal;
 
 // ---------------------------------------------------------------------------
-// Surface samples in a hashed grid (see SpatialHashGrid.cs)
+// Open-addressing spatial hash cell entry (see SpatialHashGrid.cs, 16 bytes)
+// ---------------------------------------------------------------------------
+struct CellEntry
+{
+    uint keyLo; // cx (21 bits) | (cy & 0x7FF) << 21
+    uint keyHi; // (cy >> 11) (10 bits) | (cz << 10) (21 bits)
+    uint start;
+    uint count; // 0 = empty slot
+};
+
+// ---------------------------------------------------------------------------
+// Surface samples in an exact hashed grid (see SurfaceSampler.cs, 24 bytes)
 // ---------------------------------------------------------------------------
 struct SurfaceSample
 {
     float3 position;
-    float3 normal;
+    uint   normalOct;
     uint   patchId;
     float  weight;
 };
 StructuredBuffer<SurfaceSample> _Samples;
-StructuredBuffer<uint2>         _Buckets; // (start, count)
+StructuredBuffer<CellEntry>     _SampleCells;
 
 // ---------------------------------------------------------------------------
-// Hard-edge segments in a second hashed grid (see HardEdgeSegments.cs)
+// Hard/sharp convex edge segments in a second exact hashed grid (60 bytes)
 // ---------------------------------------------------------------------------
 struct EdgeSegment
 {
@@ -59,54 +72,68 @@ struct EdgeSegment
     float3 b;
     float3 faceNormalA;
     float3 faceNormalB;
-    float  value;      // +1 = 90-degree convex, -1 = 90-degree concave
+    float  value;      // +1 = 90-degree convex (or full sharp mask), -1 = 90-degree concave
     uint   patchA;     // smooth patches of the two adjacent faces
     uint   patchB;
 };
 StructuredBuffer<EdgeSegment> _Edges;
-StructuredBuffer<uint2>       _EdgeBuckets;
+StructuredBuffer<CellEntry>   _EdgeCells;
 
 // ---------------------------------------------------------------------------
 // Images: x = curvature value, y = UV island id + 1 (0 = empty texel).
 // Island ids stay exact in float up to 2^24.
 // ---------------------------------------------------------------------------
-StructuredBuffer<uint>     _TriangleIslands; // UV island id per triangle, see UvLayout.cs
+StructuredBuffer<uint>     _TriangleIslands;   // UV island id per triangle, see UvLayout.cs
+StructuredBuffer<float>    _TriangleBevelCore; // SharpConvex mode: bevel-interior strength per triangle
 RWStructuredBuffer<float2> _Result;
 StructuredBuffer<float2>   _Src;
 RWStructuredBuffer<float2> _Dst;
 
+// JFA dilation seed buffers: packed x | (y << 16), 0xFFFFFFFF = no seed.
+StructuredBuffer<uint>     _JfaSrc;
+RWStructuredBuffer<uint>   _JfaDst;
+
 // ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
-uint   _Width;          // G-buffer / evaluation resolution
-uint   _TileSize;       // raster tile edge in pixels
-uint   _SrcWidth;       // post-process source resolution
-uint   _DstWidth;       // post-process destination resolution
-uint   _Offset;         // first element handled by this dispatch
-uint   _End;            // one past the last element handled by this dispatch
+uint   _Width;            // G-buffer / evaluation resolution (power of 2 >= 256)
+uint   _TileSize;         // raster tile edge in pixels
+uint   _SrcWidth;         // post-process source resolution
+uint   _DstWidth;         // post-process destination resolution
+uint   _Offset;           // first element handled by this dispatch
+uint   _End;              // one past the last element handled by this dispatch
 
 float3 _GridOrigin;
 float  _InvCellSize;
 uint   _HashMask;
+float  _SampleSearchNorm; // (_Radius * _InvCellSize + eps)^2 for cell-sphere AABB culling
 
 float3 _EdgeGridOrigin;
 float  _EdgeInvCellSize;
 uint   _EdgeHashMask;
-uint   _EdgeCount;      // 0 = no hard edges bound
+float  _EdgeSearchNorm;   // (edgeMaxReach * _EdgeInvCellSize + eps)^2 for cell-sphere AABB culling
+uint   _EdgeCount;        // 0 = no edges bound
 
 float  _Radius;
 float  _Strength;
 float  _NormalRejection;
-float  _GeometryWeight; // 0 = shading normals estimator, 1 = geometry estimator (face normals)
+float  _GeometryWeight;   // 0 = shading normals estimator, 1 = geometry estimator (face normals)
 uint   _SameComponentOnly;
 float  _EdgeWidth;
 float  _EdgeStrength;
+uint   _UseBevelCore;     // 1 = combine edge term with _TriangleBevelCore (SharpConvex mode)
 
-static const uint  NoOwner            = 0xFFFFFFFF;
+uint   _JfaStep;
+uint   _DilationDist2;
+
+static const uint  NoOwner            = 0xFFFFFFFFu;
+static const uint  NoSeed             = 0xFFFFFFFFu;
 static const float ConservativeRadius = 0.75; // pixels (UvLayout.ConservativeRadius)
 static const float RejectionBand      = 0.25; // normal-dot range over which rejection fades in
 static const float EdgeFacingMin      = 0.3;  // texel normal vs. edge face normal: fade-in range
 static const float EdgeFacingMax      = 0.6;
+static const float EdgePlaneMin       = 0.65; // coplanarity fade-out to block parallel stacked plates
+static const float EdgePlaneMax       = 0.92;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -137,7 +164,7 @@ uint EncodeNormal(float3 n)
 
 float3 DecodeNormal(uint v)
 {
-    float2 e = float2(v & 0xFFFF, v >> 16) / 65535.0 * 2.0 - 1.0;
+    float2 e = float2(v & 0xFFFFu, v >> 16) / 65535.0 * 2.0 - 1.0;
     float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));
     float t = saturate(-n.z);
     n.x += n.x >= 0.0 ? -t : t;
@@ -145,30 +172,31 @@ float3 DecodeNormal(uint v)
     return SafeNormalize(n, float3(0, 0, 1));
 }
 
-uint HashCell(int3 c)
+// Exact open-addressing lookup for one 3D grid cell (load factor <= 0.5).
+// Eliminates both distant-cell collisions and the 351-check deduplication loop.
+uint2 LookupCell(StructuredBuffer<CellEntry> table, uint mask, int3 c)
 {
-    uint3 u = (uint3)c;
-    return (u.x * 73856093u) ^ (u.y * 19349663u) ^ (u.z * 83492791u);
-}
+    if (c.x < 0 || c.y < 0 || c.z < 0)
+        return uint2(0, 0);
 
-int3 NeighbourOffset(uint i)
-{
-    return int3(uint3(i % 3u, (i / 3u) % 3u, i / 9u)) - 1;
-}
+    uint cx = (uint)c.x;
+    uint cy = (uint)c.y;
+    uint cz = (uint)c.z;
+    uint keyLo = (cx & 0x1FFFFFu) | ((cy & 0x7FFu) << 21);
+    uint keyHi = ((cy >> 11) & 0x3FFu) | ((cz & 0x1FFFFFu) << 10);
+    uint slot  = ((cx * 73856093u) ^ (cy * 19349663u) ^ (cz * 83492791u)) & mask;
 
-// Bucket of the i-th cell of the 3x3x3 neighbourhood, or 0xFFFFFFFF when an earlier cell
-// already hashed to the same bucket (distinct cells may collide; visit each bucket once).
-// Recomputing earlier hashes keeps this in registers (no indexable array).
-uint NeighbourBucket(int3 cell, uint i, uint mask)
-{
-    uint bucket = HashCell(cell + NeighbourOffset(i)) & mask;
-    [unroll(27)]
-    for (uint j = 0; j < i; j++)
+    [loop]
+    for (uint probe = 0; probe <= mask; probe++)
     {
-        if ((HashCell(cell + NeighbourOffset(j)) & mask) == bucket)
-            return 0xFFFFFFFF;
+        CellEntry e = table[slot];
+        if (e.count == 0)
+            return uint2(0, 0);
+        if (e.keyLo == keyLo && e.keyHi == keyHi)
+            return uint2(e.start, e.count);
+        slot = (slot + 1u) & mask;
     }
-    return bucket;
+    return uint2(0, 0);
 }
 
 bool LoadTriangle(uint t, out uint i0, out uint i1, out uint i2, out float2 a, out float2 b, out float2 c)
@@ -194,7 +222,7 @@ bool LoadTile(uint item, float margin, out uint t, out float2 a, out float2 b, o
     bool valid = LoadTriangle(t, i0, i1, i2, a, b, c);
 
     // Clamp in float before converting so far-away UVs cannot overflow the int conversion.
-    float2 tileLo = float2(tile.y & 0xFFFF, tile.y >> 16) * _TileSize;
+    float2 tileLo = float2(tile.y & 0xFFFFu, tile.y >> 16) * _TileSize;
     float2 tileHi = min(tileLo + (_TileSize - 1), (float)(_Width - 1));
     lo = (int2)ceil(max(min(a, min(b, c)) - margin, tileLo));
     hi = (int2)floor(min(max(a, max(b, c)) + margin, tileHi));
@@ -262,17 +290,6 @@ void ClearGBuffer(uint3 id : SV_DispatchThreadID)
 // ---------------------------------------------------------------------------
 // Rasterization — 1 thread per raster tile in [_Offset, _End), so the work per
 // thread is bounded by the tile size however large the triangle is.
-// Ownership is decided with atomics in three passes; attributes are written
-// once afterwards by ResolveGBuffer, so position, patch and normal of a texel
-// always come from the same triangle and repeated bakes are identical.
-//
-// 1) RasterInterior: texels whose centre lies inside a triangle. Overlapping
-//    UVs resolve to the lowest triangle index.
-// 2) RasterConservativeDistance: texels still empty record the smallest
-//    distance to any triangle within ConservativeRadius (fills island borders
-//    without bleeding into texels another island covers).
-// 3) RasterConservativeOwner: among the triangles at that distance, the lowest
-//    index wins.
 // ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
 void RasterInterior(uint3 id : SV_DispatchThreadID)
@@ -284,15 +301,36 @@ void RasterInterior(uint3 id : SV_DispatchThreadID)
     float2 a, b, c;
     int2 lo, hi;
     if (!LoadTile(item, 0.0, t, a, b, c, lo, hi)) return;
+    if (lo.x > hi.x || lo.y > hi.y) return;
+
+    // Incremental barycentric stepping avoids per-pixel divisions and cross products.
+    float invArea = 1.0 / Cross2(b - a, c - a);
+    float dw0x = (b.y - c.y) * invArea;
+    float dw0y = (c.x - b.x) * invArea;
+    float dw1x = (c.y - a.y) * invArea;
+    float dw1y = (a.x - c.x) * invArea;
+
+    float2 p0 = float2(lo);
+    float w0Row = Cross2(b - p0, c - p0) * invArea;
+    float w1Row = Cross2(c - p0, a - p0) * invArea;
 
     for (int y = lo.y; y <= hi.y; y++)
     {
+        float w0 = w0Row;
+        float w1 = w1Row;
+        uint rowBase = (uint)y * _Width;
         for (int x = lo.x; x <= hi.x; x++)
         {
-            if (!Inside(Barycentric(float2(x, y), a, b, c))) continue;
-            uint previous;
-            InterlockedMin(_GOwner[(uint)y * _Width + (uint)x], t, previous);
+            if (w0 >= -1e-5 && w1 >= -1e-5 && (1.0 - w0 - w1) >= -1e-5)
+            {
+                uint previous;
+                InterlockedMin(_GOwner[rowBase + (uint)x], t, previous);
+            }
+            w0 += dw0x;
+            w1 += dw1x;
         }
+        w0Row += dw0y;
+        w1Row += dw1y;
     }
 }
 
@@ -310,9 +348,10 @@ void RasterConservativeDistance(uint3 id : SV_DispatchThreadID)
 
     for (int y = lo.y; y <= hi.y; y++)
     {
+        uint rowBase = (uint)y * _Width;
         for (int x = lo.x; x <= hi.x; x++)
         {
-            uint index = (uint)y * _Width + (uint)x;
+            uint index = rowBase + (uint)x;
             if (_GOwner[index] != NoOwner) continue;
 
             precise float dist2;
@@ -337,10 +376,11 @@ void RasterConservativeOwner(uint3 id : SV_DispatchThreadID)
 
     for (int y = lo.y; y <= hi.y; y++)
     {
+        uint rowBase = (uint)y * _Width;
         for (int x = lo.x; x <= hi.x; x++)
         {
             // Only texels the previous pass touched (interior texels keep NoOwner here).
-            uint index = (uint)y * _Width + (uint)x;
+            uint index = rowBase + (uint)x;
             uint best = _GDist[index];
             if (best == NoOwner) continue;
 
@@ -392,99 +432,100 @@ void ResolveGBuffer(uint3 id : SV_DispatchThreadID)
 }
 
 // ---------------------------------------------------------------------------
-// EvaluateCurvature — 1 thread per texel in [_Offset, _End).
+// EvaluateCurvature — 1 thread per texel, mapped in 8x8 UV blocks so threads
+// in a warp/wavefront query the same 3D hash cells and share L1/L2 cache.
 //
-// The result is the sum of two terms:
-//
-// 1) Smooth term (width = _Radius). Aggregates the surface samples within
-//    _Radius of the texel's surface point p using the kernel
-//    w = area * (1 - d^2 / r^2)^2 and estimates the mean curvature H
-//    (n_avg = normalized weighted average sample normal):
-//
+// 1) Smooth term (width = _Radius):
 //    Shading normals: H = sum(w * dot(n_i - n_avg, d_i)) / sum(w * |d_i|^2)
-//                     Ratio of sums, not a mean of per-sample ratios: where dn
-//                     stays finite as d -> 0, per-sample dn.d / d^2 diverges
-//                     like 1/d and turns into heavy noise. Referencing n_avg
-//                     rather than the texel's own normal keeps the response
-//                     symmetric. Exact for spheres (dn = d / R).
-//    Geometry:        H = 8 * dot(n_avg, p - centroid) / r^2
-//                     (E[d^2] = r^2 / 4 under this kernel; exact for spheres).
-//                     Texel and sample normals are face normals here, so custom
-//                     shading normals cannot tilt n_avg: on a plane n_avg is the
-//                     plane normal and a lopsided neighbourhood (open border)
-//                     only shifts the centroid tangentially, which adds nothing.
+//    Geometry:        H = 2 * sum(w * dot(np, p - q_i)) / sum(w * |q_i - p|^2)
+//                     Exact (H = 1/R) on closed AND open spheres/cylinders and
+//                     0 on open flat planes without boundary attenuation.
 //
-//    Samples on the same mesh part but a different smooth patchId lie across a
-//    hard edge and are skipped: hard edges belong to the edge term, so their
-//    width does not depend on _Radius. Samples facing away from the texel
-//    normal fade out over RejectionBand above _NormalRejection.
-//
-// 2) Edge term (width = _EdgeWidth). The strongest nearby hard edge bordering
-//    the texel's smooth patch, weighted by (1 - dist^2 / width^2)^2 and by how
-//    well the texel faces one of the edge's two faces. The patch test keeps
-//    edges off other nearby surfaces of the same part (a folded or parallel
-//    face) even when they face the same way.
-//
-// Output: _Strength * H * r + _EdgeStrength * edge. +1 = a sphere of radius r
-// or a 90-degree convex edge at full strength; 0 = flat.
+// 2) Edge term (width = _EdgeWidth):
+//    Strongest nearby hard/sharp convex edge bordering the texel's patch,
+//    filtered by both normal facing and face coplanarity so edges do not bleed
+//    onto nearby parallel stacked sheets.
 // ---------------------------------------------------------------------------
 float SmoothCurvature(float3 p, float3 np, uint patchId, uint component)
 {
-    float r2    = _Radius * _Radius;
-    float invR2 = 1.0 / r2;
-    int3  cell  = (int3)floor((p - _GridOrigin) * _InvCellSize);
+    float  r2      = _Radius * _Radius;
+    float  invR2   = 1.0 / r2;
+    float3 rel     = (p - _GridOrigin) * _InvCellSize;
+    int3   cell    = (int3)floor(rel);
+    float3 f       = rel - (float3)cell;
+    bool   useGeom = _GeometryWeight > 0.5;
 
     float  sumW  = 0.0;
-    float3 sumD  = float3(0, 0, 0); // sum(w * d)
-    float3 sumN  = float3(0, 0, 0); // sum(w * n)
-    float  sumND = 0.0;             // sum(w * dot(n, d))
-    float  sumD2 = 0.0;             // sum(w * |d|^2)
+    float3 sumD  = float3(0, 0, 0);
+    float3 sumN  = float3(0, 0, 0);
+    float  sumND = 0.0;
+    float  sumD2 = 0.0;
 
     [loop]
-    for (uint i = 0; i < 27; i++)
+    for (int dz = -1; dz <= 1; dz++)
     {
-        uint bucket = NeighbourBucket(cell, i, _HashMask);
-        if (bucket == 0xFFFFFFFF) continue;
+        float ez = dz < 0 ? f.z : (dz > 0 ? 1.0 - f.z : 0.0);
+        float ez2 = ez * ez;
+        if (ez2 > _SampleSearchNorm) continue;
 
-        uint2 range = _Buckets[bucket];
-        uint end = range.x + range.y;
         [loop]
-        for (uint s = range.x; s < end; s++)
+        for (int dy = -1; dy <= 1; dy++)
         {
-            SurfaceSample smp = _Samples[s];
-            float3 d  = smp.position - p;
-            float  d2 = dot(d, d);
-            if (d2 >= r2) continue;
+            float ey = dy < 0 ? f.y : (dy > 0 ? 1.0 - f.y : 0.0);
+            float eyz2 = ez2 + ey * ey;
+            if (eyz2 > _SampleSearchNorm) continue;
 
-            if (smp.patchId != patchId)
+            [loop]
+            for (int dx = -1; dx <= 1; dx++)
             {
-                uint sampleComponent = _PatchComponents[smp.patchId];
-                if (sampleComponent == component) continue; // across a hard edge
-                if (_SameComponentOnly != 0) continue;       // another mesh part
+                float ex = dx < 0 ? f.x : (dx > 0 ? 1.0 - f.x : 0.0);
+                if (eyz2 + ex * ex > _SampleSearchNorm) continue;
+
+                uint2 range = LookupCell(_SampleCells, _HashMask, cell + int3(dx, dy, dz));
+                uint end = range.x + range.y;
+                [loop]
+                for (uint s = range.x; s < end; s++)
+                {
+                    SurfaceSample smp = _Samples[s];
+                    float3 d  = smp.position - p;
+                    float  d2 = dot(d, d);
+                    if (d2 >= r2) continue;
+
+                    if (smp.patchId != patchId)
+                    {
+                        uint sampleComponent = _PatchComponents[smp.patchId];
+                        if (sampleComponent == component) continue; // across a hard edge
+                        if (_SameComponentOnly != 0) continue;       // another mesh part
+                    }
+
+                    float3 sn = DecodeNormal(smp.normalOct);
+                    float facing = smoothstep(_NormalRejection, _NormalRejection + RejectionBand, dot(sn, np));
+                    if (facing <= 0.0) continue;
+
+                    float k = 1.0 - d2 * invR2;
+                    float w = smp.weight * k * k * facing;
+
+                    sumW  += w;
+                    sumD  += w * d;
+                    sumD2 += w * d2;
+                    if (!useGeom)
+                    {
+                        sumN  += w * sn;
+                        sumND += w * dot(sn, d);
+                    }
+                }
             }
-
-            float facing = smoothstep(_NormalRejection, _NormalRejection + RejectionBand, dot(smp.normal, np));
-            if (facing <= 0.0) continue;
-
-            float k = 1.0 - d2 * invR2;
-            float w = smp.weight * k * k * facing;
-
-            sumW  += w;
-            sumD  += w * d;
-            sumN  += w * smp.normal;
-            sumND += w * dot(smp.normal, d);
-            sumD2 += w * d2;
         }
     }
 
-    if (sumW <= 0.0)
+    if (sumD2 <= 1e-10 * sumW * r2)
         return 0.0;
 
+    if (useGeom)
+        return -2.0 * dot(np, sumD) / sumD2 * _Radius;
+
     float3 nAvg = SafeNormalize(sumN, np);
-    float geometry = -8.0 * dot(nAvg, sumD / sumW) / _Radius;
-    // sum(w * dot(n_i - nAvg, d_i)) expanded so it accumulates in one pass.
-    float shading = sumD2 > 0.0 ? (sumND - dot(nAvg, sumD)) / sumD2 * _Radius : 0.0;
-    return lerp(shading, geometry, _GeometryWeight);
+    return (sumND - dot(nAvg, sumD)) / sumD2 * _Radius;
 }
 
 float EdgeCurvature(float3 p, float3 np, uint patchId)
@@ -492,36 +533,63 @@ float EdgeCurvature(float3 p, float3 np, uint patchId)
     if (_EdgeCount == 0)
         return 0.0;
 
-    float w2   = _EdgeWidth * _EdgeWidth;
-    int3  cell = (int3)floor((p - _EdgeGridOrigin) * _EdgeInvCellSize);
-    float best = 0.0;
+    float  w2    = _EdgeWidth * _EdgeWidth;
+    float  invW2 = 1.0 / w2;
+    float3 rel   = (p - _EdgeGridOrigin) * _EdgeInvCellSize;
+    int3   cell  = (int3)floor(rel);
+    float3 f     = rel - (float3)cell;
+    float  best  = 0.0;
 
     [loop]
-    for (uint i = 0; i < 27; i++)
+    for (int dz = -1; dz <= 1; dz++)
     {
-        uint bucket = NeighbourBucket(cell, i, _EdgeHashMask);
-        if (bucket == 0xFFFFFFFF) continue;
+        float ez = dz < 0 ? f.z : (dz > 0 ? 1.0 - f.z : 0.0);
+        float ez2 = ez * ez;
+        if (ez2 > _EdgeSearchNorm) continue;
 
-        uint2 range = _EdgeBuckets[bucket];
-        uint end = range.x + range.y;
         [loop]
-        for (uint s = range.x; s < end; s++)
+        for (int dy = -1; dy <= 1; dy++)
         {
-            EdgeSegment edge = _Edges[s];
-            if (edge.patchA != patchId && edge.patchB != patchId) continue;
+            float ey = dy < 0 ? f.y : (dy > 0 ? 1.0 - f.y : 0.0);
+            float eyz2 = ez2 + ey * ey;
+            if (eyz2 > _EdgeSearchNorm) continue;
 
-            float3 ab = edge.b - edge.a;
-            float  t  = saturate(dot(p - edge.a, ab) / max(dot(ab, ab), 1e-20));
-            float3 c  = edge.a + ab * t - p;
-            float  d2 = dot(c, c);
-            if (d2 >= w2) continue;
+            [loop]
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                float ex = dx < 0 ? f.x : (dx > 0 ? 1.0 - f.x : 0.0);
+                if (eyz2 + ex * ex > _EdgeSearchNorm) continue;
 
-            // Only surfaces adjacent to the edge, not e.g. the far side of a thin plate.
-            float facing = smoothstep(EdgeFacingMin, EdgeFacingMax,
-                                      max(dot(np, edge.faceNormalA), dot(np, edge.faceNormalB)));
-            float k = 1.0 - d2 / w2;
-            float v = edge.value * k * k * facing;
-            if (abs(v) > abs(best)) best = v;
+                uint2 range = LookupCell(_EdgeCells, _EdgeHashMask, cell + int3(dx, dy, dz));
+                uint end = range.x + range.y;
+                [loop]
+                for (uint s = range.x; s < end; s++)
+                {
+                    EdgeSegment edge = _Edges[s];
+                    if (edge.patchA != patchId && edge.patchB != patchId) continue;
+
+                    float3 ab = edge.b - edge.a;
+                    float  t  = saturate(dot(p - edge.a, ab) / max(dot(ab, ab), 1e-20));
+                    float3 c  = edge.a + ab * t - p;
+                    float  d2 = dot(c, c);
+                    if (d2 >= w2) continue;
+
+                    // Require the texel to both face one of the edge's adjacent faces AND lie near
+                    // that face's plane (blocks bleed-through onto back sides and parallel stacked sheets).
+                    float  dist   = sqrt(d2);
+                    float3 vDir   = dist > 1e-6 ? (-c / dist) : float3(0, 0, 0);
+                    float  matchA = smoothstep(EdgeFacingMin, EdgeFacingMax, dot(np, edge.faceNormalA))
+                                  * (1.0 - smoothstep(EdgePlaneMin, EdgePlaneMax, abs(dot(vDir, edge.faceNormalA))));
+                    float  matchB = smoothstep(EdgeFacingMin, EdgeFacingMax, dot(np, edge.faceNormalB))
+                                  * (1.0 - smoothstep(EdgePlaneMin, EdgePlaneMax, abs(dot(vDir, edge.faceNormalB))));
+                    float  facing = max(matchA, matchB);
+                    if (facing <= 0.0) continue;
+
+                    float k = 1.0 - d2 * invW2;
+                    float v = edge.value * k * k * facing;
+                    if (abs(v) > abs(best)) best = v;
+                }
+            }
         }
     }
     return best;
@@ -530,8 +598,16 @@ float EdgeCurvature(float3 p, float3 np, uint patchId)
 [numthreads(64, 1, 1)]
 void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
 {
-    uint index = id.x + _Offset;
-    if (index >= _End) return;
+    uint dispatchIdx = id.x + _Offset;
+    if (dispatchIdx >= _End) return;
+
+    // 8x8 UV-block mapping: 64-thread groups process tight 2D squares for 3D spatial cache locality.
+    uint blockIdx     = dispatchIdx >> 6;
+    uint localIdx     = dispatchIdx & 63u;
+    uint blocksPerRow = _Width >> 3;
+    uint x            = ((blockIdx % blocksPerRow) << 3) | (localIdx & 7u);
+    uint y            = ((blockIdx / blocksPerRow) << 3) | (localIdx >> 3);
+    uint index        = y * _Width + x;
 
     float4 g = _GPosition[index];
     if (g.w < 0.5)
@@ -541,34 +617,38 @@ void EvaluateCurvature(uint3 id : SV_DispatchThreadID)
     }
 
     float3 p         = g.xyz;
-    uint   patchId     = (uint)(g.w + 0.5) - 1;
+    uint   patchId   = (uint)(g.w + 0.5) - 1;
     uint   component = _PatchComponents[patchId];
     float3 np        = DecodeNormal(_GNormal[index]);
+    uint   ownerTri  = _GOwner[index];
 
     float value = 0.0;
     if (_Strength > 0.0)
         value += _Strength * SmoothCurvature(p, np, patchId, component);
     if (_EdgeStrength > 0.0)
-        value += _EdgeStrength * EdgeCurvature(p, np, patchId);
-    _Result[index] = float2(value, (float)(_TriangleIslands[_GOwner[index]] + 1));
+    {
+        float edgeVal = EdgeCurvature(p, np, patchId);
+        if (_UseBevelCore != 0)
+            edgeVal = max(edgeVal, _TriangleBevelCore[ownerTri]);
+        value += _EdgeStrength * edgeVal;
+    }
+    _Result[index] = float2(value, (float)(_TriangleIslands[ownerTri] + 1));
 }
 
 // ---------------------------------------------------------------------------
-// Post-processing never averages texels of different UV islands: a 2x2 block
-// or a dilation front where islands meet takes the island most of its valid
-// texels belong to (lowest id on ties), and only that island's values.
+// Downsample — 2x2 average of valid texels of the dominant UV island.
 // ---------------------------------------------------------------------------
-float2 DominantIslandAverage(float2 s[9])
+float2 DominantIslandAverage4(float2 s[4])
 {
     float island = 0.0;
     uint  best   = 0;
     [unroll]
-    for (uint i = 0; i < 9; i++)
+    for (uint i = 0; i < 4; i++)
     {
         if (s[i].y < 0.5) continue;
         uint count = 0;
         [unroll]
-        for (uint j = 0; j < 9; j++)
+        for (uint j = 0; j < 4; j++)
             count += s[j].y == s[i].y ? 1u : 0u;
         if (count > best || (count == best && s[i].y < island))
         {
@@ -581,14 +661,11 @@ float2 DominantIslandAverage(float2 s[9])
 
     float sum = 0.0;
     [unroll]
-    for (uint k = 0; k < 9; k++)
+    for (uint k = 0; k < 4; k++)
         sum += s[k].y == island ? s[k].x : 0.0;
     return float2(sum / best, island);
 }
 
-// ---------------------------------------------------------------------------
-// Downsample — 2x2 average of valid texels. 1 thread per destination texel.
-// ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
 void Downsample(uint3 id : SV_DispatchThreadID)
 {
@@ -598,15 +675,13 @@ void Downsample(uint3 id : SV_DispatchThreadID)
     uint x = index % _DstWidth;
     uint y = index / _DstWidth;
 
-    float2 s[9];
-    [unroll]
-    for (uint k = 0; k < 9; k++)
-    {
-        s[k] = float2(0.0, 0.0);
-        if (k < 4) s[k] = _Src[(y * 2 + k / 2) * _SrcWidth + (x * 2 + k % 2)];
-    }
+    float2 s[4];
+    s[0] = _Src[(y * 2 + 0) * _SrcWidth + (x * 2 + 0)];
+    s[1] = _Src[(y * 2 + 0) * _SrcWidth + (x * 2 + 1)];
+    s[2] = _Src[(y * 2 + 1) * _SrcWidth + (x * 2 + 0)];
+    s[3] = _Src[(y * 2 + 1) * _SrcWidth + (x * 2 + 1)];
 
-    _Dst[index] = DominantIslandAverage(s);
+    _Dst[index] = DominantIslandAverage4(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -631,14 +706,17 @@ void Blur(uint3 id : SV_DispatchThreadID)
 
     float sum = 0.0;
     float weight = 0.0;
+    [unroll]
     for (int oy = -1; oy <= 1; oy++)
     {
+        int sy = y + oy;
+        if (sy < 0 || sy >= w) continue;
+        [unroll]
         for (int ox = -1; ox <= 1; ox++)
         {
             int sx = x + ox;
-            int sy = y + oy;
-            if (sx < 0 || sy < 0 || sx >= w || sy >= w) continue;
-            float2 s = _Src[sy * w + sx];
+            if (sx < 0 || sx >= w) continue;
+            float2 s = _Src[(uint)sy * (uint)w + (uint)sx];
             if (s.y != center.y) continue;
             float k = (ox == 0 ? 2.0 : 1.0) * (oy == 0 ? 2.0 : 1.0);
             sum    += s.x * k;
@@ -650,11 +728,79 @@ void Blur(uint3 id : SV_DispatchThreadID)
 }
 
 // ---------------------------------------------------------------------------
-// Dilate — each empty texel takes the average of its valid 8-neighbours of
-// the dominant island. Run N times to extend islands by N pixels.
+// Jump Flooding Algorithm (JFA) Dilation — O(log N) Euclidean nearest-texel
+// dilation. Never mixes across UV islands and preserves crisp edges without
+// iterative blurring.
 // ---------------------------------------------------------------------------
 [numthreads(64, 1, 1)]
-void Dilate(uint3 id : SV_DispatchThreadID)
+void JfaInit(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    if (_Src[index].y > 0.5)
+    {
+        uint x = index % _SrcWidth;
+        uint y = index / _SrcWidth;
+        _JfaDst[index] = (x & 0xFFFFu) | ((y & 0xFFFFu) << 16);
+    }
+    else
+    {
+        _JfaDst[index] = NoSeed;
+    }
+}
+
+[numthreads(64, 1, 1)]
+void JfaStep(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x + _Offset;
+    if (index >= _End) return;
+
+    int x = (int)(index % _SrcWidth);
+    int y = (int)(index / _SrcWidth);
+    int w = (int)_SrcWidth;
+    int step = (int)_JfaStep;
+
+    uint bestSeed = _JfaSrc[index];
+    uint bestDist2 = 0xFFFFFFFFu;
+    if (bestSeed != NoSeed)
+    {
+        int dx = (int)(bestSeed & 0xFFFFu) - x;
+        int dy = (int)(bestSeed >> 16) - y;
+        bestDist2 = (uint)(dx * dx + dy * dy);
+    }
+
+    [unroll]
+    for (int oy = -1; oy <= 1; oy++)
+    {
+        int ny = y + oy * step;
+        if (ny < 0 || ny >= w) continue;
+        [unroll]
+        for (int ox = -1; ox <= 1; ox++)
+        {
+            if (ox == 0 && oy == 0) continue;
+            int nx = x + ox * step;
+            if (nx < 0 || nx >= w) continue;
+
+            uint cand = _JfaSrc[(uint)ny * (uint)w + (uint)nx];
+            if (cand == NoSeed) continue;
+
+            int dx = (int)(cand & 0xFFFFu) - x;
+            int dy = (int)(cand >> 16) - y;
+            uint d2 = (uint)(dx * dx + dy * dy);
+            if (d2 < bestDist2 || (d2 == bestDist2 && cand < bestSeed))
+            {
+                bestDist2 = d2;
+                bestSeed = cand;
+            }
+        }
+    }
+
+    _JfaDst[index] = bestSeed;
+}
+
+[numthreads(64, 1, 1)]
+void JfaApply(uint3 id : SV_DispatchThreadID)
 {
     uint index = id.x + _Offset;
     if (index >= _End) return;
@@ -666,19 +812,21 @@ void Dilate(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    int x = (int)(index % _SrcWidth);
-    int y = (int)(index / _SrcWidth);
-    int w = (int)_SrcWidth;
-
-    float2 s[9];
-    [unroll]
-    for (uint k = 0; k < 9; k++)
+    uint seed = _JfaSrc[index];
+    if (seed != NoSeed)
     {
-        int sx = x + (int)(k % 3) - 1;
-        int sy = y + (int)(k / 3) - 1;
-        s[k] = float2(0.0, 0.0);
-        if (sx >= 0 && sy >= 0 && sx < w && sy < w) s[k] = _Src[sy * w + sx];
+        int x = (int)(index % _SrcWidth);
+        int y = (int)(index / _SrcWidth);
+        int sx = (int)(seed & 0xFFFFu);
+        int sy = (int)(seed >> 16);
+        int dx = sx - x;
+        int dy = sy - y;
+        if ((uint)(dx * dx + dy * dy) <= _DilationDist2)
+        {
+            _Dst[index] = _Src[(uint)sy * _SrcWidth + (uint)sx];
+            return;
+        }
     }
 
-    _Dst[index] = DominantIslandAverage(s);
+    _Dst[index] = float2(0.0, 0.0);
 }
